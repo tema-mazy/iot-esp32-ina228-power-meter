@@ -1,0 +1,32 @@
+# Example systemd unit for the host-side reader.
+#
+#   sudo cp battery-monitor.service /etc/systemd/system/
+#   sudo systemctl enable --now battery-monitor
+#   cat /run/battery.json
+#   curl localhost:8080
+#
+# The device reboots on ATZ and after every OTA, so the reader must survive
+# the port vanishing. monitor.py reconnects internally; Restart=always is the
+# backstop for anything it cannot handle.
+
+[Unit]
+Description=Battery monitor reader
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/battery-monitor/monitor.py '/dev/ttyACM*' \
+          --status-file /run/battery.json --http 8080
+Restart=always
+RestartSec=5
+
+# Serial access without running as root: add the user to the dialout group
+# (Debian/Ubuntu) or uucp (Arch) first.
+User=nobody
+Group=dialout
+
+# The status file lives in /run, which is tmpfs and cleared on boot.
+RuntimeDirectory=battery-monitor
+
+[Install]
+WantedBy=multi-user.target

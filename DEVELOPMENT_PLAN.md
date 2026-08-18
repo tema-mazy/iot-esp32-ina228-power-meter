@@ -579,7 +579,7 @@ No `factory` partition - with dual OTA slots it only wastes flash. Both slots ta
 
 **Phase 6 - OTA. DONE** (built early; it makes every later phase flashable over the link). `ATFW`, MD5, rollback with the health-gated confirm. *Checkpoint: >=10 successful updates, plus a deliberately corrupted image that is rejected, plus an image that hangs on boot and is correctly rolled back.*
 
-**Phase 7 - Host side.** Python reader, systemd service, `ATA` polled at 1 Hz, exposed as a file/HTTP endpoint. Reconnect handling for the ESP32 rebooting under `ATZ`/OTA.
+**Phase 7 - Host side. DONE.** Python reader, systemd service, `ATA` polled at 1 Hz, exposed as a file/HTTP endpoint. Reconnect handling for the ESP32 rebooting under `ATZ`/OTA.
 
 *(Phase 8 - storage mode - is documented in S6 but **not planned**: the monitor is never stored attached to a battery, so there is nothing to save.)*
 

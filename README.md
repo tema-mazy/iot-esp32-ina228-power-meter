@@ -115,6 +115,30 @@ Roughly 3 seconds for a 280 KB image. The transfer is **ACK-paced**: the device 
 
 Images boot as `PENDING_VERIFY` and must pass a health check (INA228 probe + one served command) before the bootloader keeps them - a bad update rolls back rather than bricking the unit.
 
+## Reading it from a host
+
+```sh
+./tools/monitor.py /dev/ttyACM0                      # live table
+./tools/monitor.py '/dev/cu.usbmodem*' --json        # newline-delimited JSON
+./tools/monitor.py /dev/ttyACM0 --status-file /run/battery.json
+./tools/monitor.py /dev/ttyACM0 --http 8080          # GET / -> latest JSON
+```
+
+Or import it:
+
+```python
+from monitor import Monitor
+with Monitor('/dev/ttyACM0') as m:
+    print(m.read())
+```
+
+It reconnects on its own. The device disappears from the bus during a reboot
+(ATZ, and after every OTA), so a reader that dies on a dropped port is
+useless. Pass a glob rather than a fixed path: the port name is not stable
+across reboots on macOS.
+
+`tools/battery-monitor.service` is a systemd example.
+
 ## Tests
 
 ```sh
@@ -135,7 +159,7 @@ Images boot as `PENDING_VERIFY` and must pass a health check (INA228 probe + one
 | 4 `ATS` provisioning + NVS | next |
 | 5 Fuel gauge | not started |
 | 6 OTA | done (built early) |
-| 7 Host-side reader | not started |
+| 7 Host-side reader | done |
 
 `ATA` currently reports live V, I, P, temperature, charge and energy. SoC fields arrive with the gauge in Phase 5 - they are omitted rather than emitted as nulls, so nothing can bind to values that do not yet mean anything.
 
