@@ -1,0 +1,127 @@
+menu "Battery Monitor"
+
+menu "Pin assignment"
+
+config PM_I2C_SDA_GPIO
+    int "I2C SDA GPIO"
+    default 4
+    help
+        To the INA228 (STEMMA QT blue wire). GPIO4 and GPIO3 are chosen so
+        GND/3V3/SDA/SCL land on four consecutive pads on the SuperMini's
+        left edge, in the cable's own colour order. See hardware.md 3.2.
+
+config PM_I2C_SCL_GPIO
+    int "I2C SCL GPIO"
+    default 3
+    help
+        To the INA228 (STEMMA QT yellow wire).
+
+config PM_INA_ALERT_GPIO
+    int "INA228 ALERT GPIO (-1 to disable)"
+    default 5
+    help
+        Open-drain alert output. Unused by the current firmware; wire it
+        anyway, it costs one wire and enables limit alerts later.
+
+config PM_LED_GPIO
+    int "Status LED GPIO"
+    default 8
+    help
+        The single controllable LED (blue on the SuperMini). All status is
+        encoded in blink counts, not colour -- see plan 2.6. Red and green
+        on the boards are hardwired power indicators, not addressable.
+
+config PM_LED_ACTIVE_LOW
+    bool "Status LED is active low"
+    default y
+    help
+        True for the SuperMini's onboard LED. A panel LED in a production
+        enclosure is typically active high.
+
+config PM_BUTTON_GPIO
+    int "Button GPIO"
+    default 9
+    help
+        9 = onboard BOOT button, for development.
+        10 = case-mounted button in production (no strapping function).
+        Note GPIO10 cannot wake the chip from deep sleep; only GPIO0-5 can.
+        That matters only if the deferred storage mode (plan 6) is ever
+        implemented, which it is not currently planned to be.
+
+config PM_BUTTON_ACTIVE_LOW
+    bool "Button is active low"
+    default y
+
+endmenu
+
+menu "Hardware parameters"
+
+config PM_RSHUNT_MICROOHM
+    int "Shunt resistance (microohms)"
+    default 15000
+    help
+        15000 = the 15 mOhm shunt on the Adafruit INA228 breakout (PN 5832).
+        Change this if you fit an external shunt; the driver recomputes
+        SHUNT_CAL from it and the Imax given by ATS.
+
+config PM_INA_I2C_ADDR
+    hex "INA228 I2C address"
+    default 0x40
+    help
+        0x40 with A0/A1 unconnected.
+
+config PM_I2C_FREQ_HZ
+    int "I2C bus frequency (Hz)"
+    default 400000
+    help
+        Drop to 100000 if the cable to the INA228 exceeds ~20 cm.
+
+endmenu
+
+menu "Host link"
+
+choice PM_LINK
+    prompt "AT command transport"
+    default PM_LINK_USB
+    help
+        The AT parser, OTA receiver and JSON emitter are written against a
+        4-function transport interface; this only selects the backend.
+
+config PM_LINK_USB
+    bool "USB Serial/JTAG (/dev/ttyACM0)"
+
+config PM_LINK_UART
+    bool "UART1"
+
+endchoice
+
+config PM_UART_TX_GPIO
+    int "UART1 TX GPIO"
+    depends on PM_LINK_UART
+    default 6
+    help
+        ESP32 side. Note GPIO14/15 are SPI flash pins on the C3 and cannot
+        be used -- those numbers in older notes refer to the Pi's header.
+
+config PM_UART_RX_GPIO
+    int "UART1 RX GPIO"
+    depends on PM_LINK_UART
+    default 7
+
+config PM_UART_BAUD
+    int "UART1 baud rate"
+    depends on PM_LINK_UART
+    default 115200
+
+endmenu
+
+config PM_LED_ACTIVITY
+    bool "Flicker the LED on each AT command"
+    default y
+    help
+        ~20 ms flicker on OK, 3 fast blinks on ERROR. Deliberately a
+        flicker and not a blink: a host polling ATA at 1 Hz would otherwise
+        produce a steady 1 Hz pattern indistinguishable from the fault
+        indication. See plan 2.6.
+
+endmenu

@@ -1,0 +1,28 @@
+CONFIG_IDF_TARGET="esp32c3"
+
+# Flash / partitions
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# OTA rollback: a new image boots PENDING_VERIFY and must confirm itself
+# (plan S2.5). Without this a bad ATFW update bricks the unit.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Console DISABLED. The AT link owns USB Serial/JTAG from Phase 2 onward, and
+# it must stay a strict request/response channel -- any stray log line would
+# corrupt the protocol. ESP_LOG is diverted to the RAM ring buffer instead and
+# surfaces only via ATL (plan S1.4).
+#
+# Consequence: a boot-time panic produces no visible output. For bench
+# debugging set CONFIG_ESP_CONSOLE_UART_DEFAULT to get logs on the GPIO21/20
+# debug header (hardware.md S4.4) -- but then the AT link must move to UART1.
+CONFIG_ESP_CONSOLE_NONE=y
+
+# 80 MHz is ample for a 1 Hz gauge loop and saves ~4 mA of the monitor's
+# ~7 mA budget (plan S6.5). Raise if a future workload needs it.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y
+
+# No radios: saves ~80-100 mA and shrinks the image (hardware.md S8).
+CONFIG_ESP_WIFI_ENABLED=n
+CONFIG_BT_ENABLED=n
