@@ -14,6 +14,7 @@
 #include "led.h"
 #include "link.h"
 #include "logbuf.h"
+#include "storage.h"
 #include "ota.h"
 #include "sdkconfig.h"
 
@@ -61,15 +62,29 @@ static void log_identity(void) {
 static void gauge_task(void *arg) {
   (void)arg;
 
-  // Imax is provisioned by ATS in Phase 4; until then assume the shunt's full
-  // range so bench readings are valid with no configuration.
+  // An unprovisioned device is still a working voltmeter and ammeter, so fall
+  // back to the shunt's full range rather than refusing to measure. ATS
+  // narrows it, which improves resolution and can select ADCRANGE=1.
+  battery_config_t bat;
+  float imax = 10.0f;
+  if (storage_load_config(&bat) == ESP_OK) {
+    at_set_config(&bat);
+    imax = bat.imax;
+    ESP_LOGI(TAG, "battery: %s %uS%uP %lu mAh, %.2f-%.2f V, Imax %.2f A, pack '%s'",
+             chem_name(bat.chem), bat.series, bat.parallel,
+             (unsigned long)bat.capacity_mah, bat.vmin, bat.vmax, bat.imax,
+             bat.pack_id);
+  } else {
+    ESP_LOGW(TAG, "no battery provisioned - use ATS= (SoC unavailable)");
+  }
+
   ina228_config_t cfg = {
       .sda_gpio    = CONFIG_PM_I2C_SDA_GPIO,
       .scl_gpio    = CONFIG_PM_I2C_SCL_GPIO,
       .addr        = CONFIG_PM_INA_I2C_ADDR,
       .freq_hz     = CONFIG_PM_I2C_FREQ_HZ,
       .rshunt_uohm = CONFIG_PM_RSHUNT_MICROOHM,
-      .imax_a      = 10.0f,
+      .imax_a      = imax,
   };
 
   bool ok = (ina228_init(&cfg) == ESP_OK);
@@ -112,6 +127,11 @@ void app_main(void) {
   led_init();
   logbuf_init(); // divert ESP_LOG before anything logs
   log_identity();
+
+  esp_err_t nvs_err = storage_init();
+  if (nvs_err != ESP_OK)
+    ESP_LOGE(TAG, "NVS init failed: %s - config will not persist",
+             esp_err_to_name(nvs_err));
 
   if (link_init() != ESP_OK) {
     // Nothing can report this: the link is how reporting happens. Blink and

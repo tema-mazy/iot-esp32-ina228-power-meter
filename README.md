@@ -45,7 +45,7 @@ Two things that fail silently if you skip them:
 |---|---|---|
 | `AT` | `OK` | Keepalive |
 | `ATI` | version, git sha, build, chip, MAC | Identity |
-| `ATS=<chem>,<xSyP>,<mAh>,<Vmin>,<Vmax>,<Imax>` | `OK` | Provision the battery |
+| `ATS=<chem>,<xSyP>,<mAh>,<Vmin>,<Vmax>,<Imax>[,<pack_id>]` | `OK` | Provision the battery |
 | `ATS?` | current config | Read back |
 | `ATA` | JSON | Live V, I, P, SoC, mAh |
 | `ATL` | log lines | Recent log ring buffer |
@@ -54,10 +54,18 @@ Two things that fail silently if you skip them:
 | `ATZ` | `OK`, reboot | Restart |
 | `ATFW=<bytes>,<md5>` | `OK <chunk>`, binary, `OK` | OTA update (ACK-paced) |
 
-`chem` ? `LifePo` `LiIon` `AGM` `Acid` - selects the open-circuit-voltage table used for SoC seeding.
+`chem` is one of `LifePo` `LiIon` `AGM` `Acid`, selecting the open-circuit-voltage table used for SoC seeding.
+
+`Vmax` is the **charge ceiling**, not the resting-full voltage. Close together for lithium, but ~1.8 V apart on a 12 V lead-acid battery; the resting figure comes from the chemistry's OCV table.
+
+`pack_id` is optional, default `default`. Each pack keeps its own NVS record, so swapping between known batteries restores that pack's stored count and learned capacity rather than treating every swap as a new battery.
+
+A realistic `Imax` matters: it sets `CURRENT_LSB` and, below about 2.7 A with the 15 mOhm shunt, selects the INA228's fine ADC range for **4x better current resolution**.
 
 ```
-ATS=LiIon,5S3P,12000,15.0,21.0,10.0     # 18 V 12 Ah 21700 pack
+ATS=LiIon,5S1P,2000,15.0,21.0,2.5,bp18650   # 18 V 2 Ah 18650 pack
+ATS?
+LiIon,5S1P,2000,15.00,21.00,2.50,bp18650
 ATA
 {"v":19.84,"i":1.42,"p":28.2,"t":31.4,"soc":73,"mah_left":8760,
  "mah_used":3240,"wh":22.4,"state":"discharging","est":false,"err":0}
@@ -156,8 +164,8 @@ across reboots on macOS.
 | 1 INA228 driver | done - bench checkpoint (V/I vs DMM) pending |
 | 2 Transport + log buffer | done |
 | 3 AT core | done |
-| 4 `ATS` provisioning + NVS | next |
-| 5 Fuel gauge | not started |
+| 4 `ATS` provisioning + NVS | done |
+| 5 Fuel gauge | next |
 | 6 OTA | done (built early) |
 | 7 Host-side reader | done |
 

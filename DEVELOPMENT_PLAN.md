@@ -87,7 +87,7 @@ Consequence to accept knowingly: **a boot-time panic or bootloader failure produ
 | `AT` | `OK` | Keepalive. Must answer in <5 ms |
 | `ATZ` | `OK` then reboot | Flush NVS, reply, 100 ms delay, `esp_restart()` |
 | `ATI` | `<fwver>,<git sha>,<build date>,<chip>,<mac>` | Version/identity. Needed to make OTA safe |
-| `ATS=<chem>,<xSyP>,<mAh>,<Vmin>,<Vmax>,<Imax>` | `OK` \| `ERROR n ...` | Provision pack. Persist to NVS |
+| `ATS=<chem>,<xSyP>,<mAh>,<Vmin>,<Vmax>,<Imax>[,<pack_id>]` | `OK` \| `ERROR n ...` | Provision pack. Persist to NVS |
 | `ATS?` | current config, same field order | Read-back. Non-negotiable for a provisioning command |
 | `ATA` | JSON line | Live measurement + SoC |
 | `ATL` | log lines then `OK` | Multi-line; see S2.4 |
@@ -123,7 +123,31 @@ No extra parameter is needed: `Vmax` bounds what the hardware must tolerate and 
 
 Cross-check: warn (do not reject) if `Vmax / xS` falls outside **4.0-4.25** V/cell (`LiIon`), **3.5-3.75** (`LifePo`), or **2.30-2.50** (`AGM`, `Acid`). Vmin/Vmax are stored pack-level; per-cell figures are derived by dividing by the S count.
 
-Anything invalid -> `ERROR 3 <field name>`. On success, write NVS, recompute the INA228 calibration (S3.2), and re-arm the gauge.
+**`pack_id`** is an optional 7th field, 1-15 chars of `[A-Za-z0-9_-]`, default
+`default`. Each pack gets its own NVS record plus a separate `active` key, so
+returning to a known battery restores its stored count and learned capacity
+rather than re-seeding. See `main/storage.c`.
+
+> The parser uppercases the command word only, stopping at the first `=`.
+> Everything after it is data: `pack_id` is case-sensitive, and chemistry
+> names are matched case-insensitively anyway.
+
+Anything invalid -> `ERROR 3 <field name>`, naming the field rather than only
+the code.
+
+**Apply the calibration before persisting.** If `Imax x Rshunt` overflows the
+15-bit `SHUNT_CAL` the hardware rejects it, and the config must not reach NVS
+or every later boot would reload a configuration already known to fail.
+
+Measured effect of a realistic `Imax` on the 15 mOhm shunt:
+
+| `Imax` | `CURRENT_LSB` | ADCRANGE | Shunt full scale |
+|---|---|---|---|
+| 10.0 A (unprovisioned default) | 19.07 uA | 0 | 150 mV |
+| 2.5 A | **4.77 uA** | **1** | 37.5 mV |
+
+`SHUNT_CAL` is unchanged at 3750 across that switch, which is correct rather
+than a bug: `CURRENT_LSB` falls 4x while the ADCRANGE=1 multiplier is 4x.
 
 ### 2.3 `ATA` response
 
@@ -426,7 +450,7 @@ V_ocv ~ V_measured + I x R_total
 
 **Self-calibrating:** every load step yields `R_total = ?V / ?I` for free. Record it on transitions where `|?I|` exceeds ~200 mA, keep a rolling median, and persist it to NVS. No bench measurement, and it tracks the pack as it ages and warms.
 
-Typical magnitudes for the 5S3P pack: lead + fuse ~10 mOhm, cells ~30-60 mOhm, so `R_total` ~ 40-70 mOhm - about 100 mV at 2 A. Compensating it upgrades voltage from *"trustworthy only at rest"* to *"a continuous sanity check on the coulomb count"*, which is the real value; the wiring-drop component is a small part of it (hardware.md S3.1.2).
+**Measured values vary enormously between packs, which is why `R_total` must be learned rather than hardcoded.** On the 5S1P 18650 2 Ah pack two independent methods agree on **about 1 ohm**: 96.3 mV of sag for a 104 mA load swing (0.93 ohm), and rest-versus-load, 19.6902 V at 0.4 mA against 19.5350 V at 134 mA (1.16 ohm). That is ~200 mOhm per cell and **20x** the 40-70 mOhm expected of the 5S3P 21700 pack, which has three cells per string. At 1 A this pack sags a full volt. Compensating it upgrades voltage from *"trustworthy only at rest"* to *"a continuous sanity check on the coulomb count"*, which is the real value; the wiring-drop component is a small part of it (hardware.md S3.1.2).
 
 **Limits.** `R_total` varies with temperature, SoC and age - the rolling estimate absorbs that. It does **not** model relaxation: Li-ion terminal voltage recovers over minutes after a load drops, so IR compensation is worth +/-20-30 mV, never as good as a genuine rest. **Do not use it to replace rest-based OCV seeding** - use it to flag disagreement between the coulomb count and the voltage estimate, which is how a drifting gauge announces itself.
 
@@ -533,7 +557,8 @@ main/
   led.c / led.h             blink vocabulary                     [done]
   logbuf.c / logbuf.h       ring buffer + vprintf capture        [done]
   gauge.c / gauge.h         coulomb counting, SoC                [Phase 5]
-  storage.c                 NVS wrapper                          [Phase 4]
+  config.c / config.h       ATS parse, validate, format          [done]
+  storage.c / storage.h     NVS, per-pack records                [done]
 tools/
   fwupdate.py               OTA client   ./fwupdate.py PORT fw.bin
   test_at.py                protocol test suite (39 tests)
@@ -573,7 +598,7 @@ No `factory` partition - with dual OTA slots it only wastes flash. Both slots ta
 
 **Phase 3 - AT core. DONE.** Parser, `AT` / `ATZ` / `ATI` / `ATL`, error codes. *Checkpoint: 24 h keepalive soak, zero missed responses.*
 
-**Phase 4 - Config.** `ATS` / `ATS?`, validation, NVS persistence, calibration recompute. *Checkpoint: config survives power cycle; SHUNT_CAL changes measurably alter reported current.*
+**Phase 4 - Config. DONE.** `ATS` / `ATS?`, validation, NVS persistence, calibration recompute. *Checkpoint: config survives power cycle; SHUNT_CAL changes measurably alter reported current.*
 
 **Phase 5 - Gauge.** Coulomb counting, anchors, re-seed, `ATA` / `ATR` / `ATC`. *Checkpoint: a controlled full-discharge on the real pack lands within 5% of the rated Ah; a mid-discharge power-cut loses <1% of count.*
 

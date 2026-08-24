@@ -2,6 +2,7 @@
 // one response line per command. Strictly request/response: the device never
 // speaks first (plan S2).
 #pragma once
+#include "config.h"
 #include "ina228.h"
 #include <stdbool.h>
 
@@ -21,3 +22,7 @@ void at_task(void *arg);
 // Called by the gauge task each poll. Keeps the AT task off the I2C bus so a
 // slow or wedged sensor can never delay a response (plan S5).
 void at_publish(const ina228_reading_t *r, bool valid);
+
+// Active battery config, or false if unprovisioned.
+bool at_get_config(battery_config_t *out);
+void at_set_config(const battery_config_t *cfg);

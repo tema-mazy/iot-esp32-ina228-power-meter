@@ -185,6 +185,68 @@ def test_log(d):
     check("ATL is idempotent", d.cmd("ATL", wait=1.2) == r)
 
 
+def test_provisioning(d):
+    """ATS validation, round-trip and NVS persistence.
+
+    Saves and restores whatever was already provisioned, so running the suite
+    does not clobber a real battery configuration.
+    """
+    print("\nbattery provisioning")
+    saved = d.cmd("ATS?")
+    had_config = not saved.startswith("ERROR")
+
+    bad = [
+        ("ATS=Bogus,5S1P,2000,15,21,2.5",          "chem"),
+        ("ATS=LiIon,5X1P,2000,15,21,2.5",          "xSyP"),
+        ("ATS=LiIon,5S1P,0,15,21,2.5",             "zero capacity"),
+        ("ATS=LiIon,5S1P,2000,21,15,2.5",          "Vmax below Vmin"),
+        ("ATS=LiIon,5S1P,2000,15,21,99",           "Imax out of range"),
+        ("ATS=LiIon,5S1P,2000,15,21",              "too few fields"),
+        ("ATS=LiIon,5S1P,2000,15,21,2.5,bad id!",  "illegal pack_id"),
+    ]
+    for cmd, why in bad:
+        r = d.cmd(cmd)
+        check(f"reject {why}", r.startswith("ERROR 3"), repr(r[:60]))
+
+    # A rejected ATS must not have been stored, or every later boot would
+    # reload a configuration the hardware already refused.
+    after = d.cmd("ATS?")
+    check("rejects did not alter stored config", after == saved,
+          f"was {saved!r}, now {after!r}")
+
+    probe = "LiIon,5S1P,2000,15.00,21.00,2.50,testpack"
+    check("valid ATS accepted", d.cmd("ATS=" + probe) == "OK")
+    check("ATS? round-trips exactly", d.cmd("ATS?") == probe,
+          repr(d.cmd("ATS?")))
+
+    # Imax 2.50 A x 15 mOhm = 37.5 mV, inside the +/-40.96 mV window, so the
+    # driver must select the fine range. This is the resolution win from
+    # provisioning a realistic Imax.
+    log = d.cmd("ATL", wait=1.2)
+    cal = [l for l in log.splitlines() if "cal:" in l]
+    check("calibration recomputed on ATS", bool(cal), "no cal line in ATL")
+    if cal:
+        check("Imax 2.5 A selects ADCRANGE=1", "ADCRANGE=1" in cal[-1],
+              cal[-1][-60:])
+
+    # Persistence across a reboot is the whole point of storing it.
+    d.cmd("ATZ")
+    time.sleep(5)
+    d.drain()
+    check("config survives reboot", d.cmd("ATS?", wait=1.0) == probe,
+          repr(d.cmd("ATS?")))
+
+    # pack_id is case-sensitive, so the parser must not uppercase past '='.
+    d.cmd("ATS=LiIon,5S1P,2000,15,21,2.5,MixedCase")
+    r = d.cmd("ATS?")
+    check("pack_id keeps its case", r.endswith("MixedCase"), repr(r))
+
+    if had_config:
+        d.cmd("ATS=" + saved)
+        check("restored the original config", d.cmd("ATS?") == saved)
+    print("       (device left provisioned as: " + d.cmd("ATS?") + ")")
+
+
 def test_ota_rejects(d, img_size):
     print("\nATFW input validation (image must survive all of these)")
     good_md5 = "0" * 32
@@ -277,6 +339,7 @@ def main():
         test_identity(d)
         test_measurement(d)
         test_log(d)
+        test_provisioning(d)
         test_ota_rejects(d, len(image) if image else 0)
         if image:
             test_ota_md5_mismatch(d, image)

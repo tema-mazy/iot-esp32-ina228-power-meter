@@ -13,3 +13,5 @@ dependencies.lock
 # Python
 __pycache__/
 *.pyc
+*.jsonl
+discharge.err

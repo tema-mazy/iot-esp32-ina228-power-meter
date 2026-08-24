@@ -10,7 +10,9 @@
 #include "led.h"
 #include "link.h"
 #include "logbuf.h"
+#include "config.h"
 #include "ota.h"
+#include "storage.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +24,23 @@
 static ina228_reading_t s_reading;
 static bool             s_reading_valid;
 static SemaphoreHandle_t s_lock;
+
+// Active battery config. NULL-equivalent when unprovisioned: the device is
+// still a perfectly good voltmeter/ammeter without it, only SoC needs it.
+static battery_config_t s_cfg;
+static bool             s_cfg_valid;
+
+bool at_get_config(battery_config_t *out) {
+  if (!s_cfg_valid)
+    return false;
+  *out = s_cfg;
+  return true;
+}
+
+void at_set_config(const battery_config_t *cfg) {
+  s_cfg = *cfg;
+  s_cfg_valid = true;
+}
 
 void at_publish(const ina228_reading_t *r, bool valid) {
   if (!s_lock)
@@ -164,6 +183,48 @@ static void cmd_atfw(const char *args) {
   }
 }
 
+// ATS=<chem>,<xSyP>,<mAh>,<Vmin>,<Vmax>,<Imax>[,<pack_id>]
+static void cmd_ats(const char *args) {
+  battery_config_t cfg;
+  const char      *bad = NULL;
+
+  if (!config_parse(args, &cfg, &bad)) {
+    reply_err(AT_ERR_PARAM, bad);
+    return;
+  }
+  config_warn_if_odd(&cfg);
+
+  // Apply before persisting: a calibration the hardware rejects (Imax x
+  // Rshunt overflowing the 15-bit SHUNT_CAL) must not be stored as if it
+  // worked, or every subsequent boot would fail the same way.
+  if (ina228_set_calibration(CONFIG_PM_RSHUNT_MICROOHM, cfg.imax) != ESP_OK) {
+    reply_err(AT_ERR_PARAM, "Imax x Rshunt overflows SHUNT_CAL");
+    return;
+  }
+
+  esp_err_t err = storage_save_config(&cfg);
+  if (err != ESP_OK) {
+    reply_err(AT_ERR_NVS, esp_err_to_name(err));
+    return;
+  }
+
+  at_set_config(&cfg);
+  reply_ok();
+}
+
+static void cmd_ats_query(void) {
+  battery_config_t cfg;
+  if (!at_get_config(&cfg)) {
+    reply_err(AT_ERR_NOCONFIG, "no battery provisioned, use ATS=");
+    return;
+  }
+  char line[160];
+  config_format(&cfg, line, sizeof(line));
+  link_printf("%s\r\n", line);
+  led_ok();
+  ota_health_at_served();
+}
+
 static void cmd_atz(void) {
   reply_ok();
   vTaskDelay(pdMS_TO_TICKS(100)); // let the response drain before the reset
@@ -181,7 +242,10 @@ static void handle_line(char *line) {
   if (len == 0)
     return; // bare newline: ignore, do not answer
 
-  for (int i = 0; i < len; i++)
+  // Uppercase only up to the first '=' . Everything after it is data, and
+  // pack_id is case-sensitive; chemistry names are compared case-insensitively
+  // anyway.
+  for (int i = 0; i < len && line[i] != '='; i++)
     line[i] = toupper((unsigned char)line[i]);
 
   if (strncmp(line, "AT", 2) != 0) {
@@ -197,11 +261,12 @@ static void handle_line(char *line) {
   if (!strcmp(cmd, "L"))  { cmd_atl();   return; }
   if (!strcmp(cmd, "Z"))  { cmd_atz();   return; }
   if (!strncmp(cmd, "FW=", 3)) { cmd_atfw(cmd + 3); return; }
+  if (!strcmp(cmd, "S?"))      { cmd_ats_query();   return; }
+  if (!strncmp(cmd, "S=", 2))  { cmd_ats(cmd + 2);  return; }
 
   // Phase 4/5/6 commands, deliberately reported as not-yet-implemented rather
   // than unknown, so a host can tell "wrong firmware version" from "typo".
-  if (!strncmp(cmd, "S", 1) || !strncmp(cmd, "R", 1) ||
-      !strncmp(cmd, "C=", 2)) {
+  if (!strncmp(cmd, "R", 1) || !strncmp(cmd, "C=", 2)) {
     reply_err(AT_ERR_UNKNOWN, "not implemented in this phase");
     return;
   }
