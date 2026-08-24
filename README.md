@@ -33,6 +33,8 @@ See **[hardware.md](hardware.md)** for the authoritative detail.
 
 **Pinout:** SDA `GPIO4` . SCL `GPIO3` . ALERT `GPIO5` . LED `GPIO8` . button `GPIO9` (dev) / `GPIO10` (production) . debug UART0 `GPIO21/20`
 
+Currents above **10.9 A** need the onboard shunt removed and an external one fitted - for example an FL-2 75 mV / 100 A (750 uOhm), good for ~218 A. Set `CONFIG_PM_RSHUNT_MICROOHM` and `ATS` adjusts its own limits to match. See [hardware.md S3.4](hardware.md).
+
 Two things that fail silently if you skip them:
 - **Bridge `VBus` to `VIN+`** on the breakout - otherwise current reads correctly and voltage reads zero ([hardware.md S3.1.1](hardware.md))
 - **All load current must pass through `VIN+ -> VIN-`** - any second connection to battery positive is invisible to the gauge

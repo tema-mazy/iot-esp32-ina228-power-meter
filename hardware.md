@@ -268,7 +268,39 @@ Keep the **connector end** for the INA228 and cut the other. A QT-to-QT cable cu
 
 Nothing to wire - the 15 mOhm shunt and its Kelvin connections are on the breakout. Dissipation at 3 A is `I^2R = 9 x 0.015 = 0.135 W`, trivial for the 2512 part. At the 10.9 A ceiling it is 1.8 W, which would need airflow. Size `Imax` in `ATS` to the actual load, not the shunt's ceiling.
 
-If you later move to an external shunt, change `CONFIG_PM_RSHUNT_MOHM` in Kconfig and route IN+/IN- as a **Kelvin (4-wire) pair**, twisted, tapped at the shunt's inner sense pads - not at the power lugs.
+### Measuring above 10 A - external shunt
+
+The onboard shunt caps the module at **+/-10.9 A** (163.84 mV full scale / 15 mOhm). For more, remove it and fit an external one.
+
+**Example: FL-2 DC 75 mV / 100 A.** These are rated by the voltage they develop at rated current, so 75 mV at 100 A is **750 uOhm**.
+
+| | Onboard | FL-2 75 mV / 100 A |
+|---|---|---|
+| Resistance | 15 mOhm | **0.75 mOhm** |
+| Ceiling (163.84 mV / R) | 10.9 A | **218 A** |
+| `CURRENT_LSB` at that Imax | 20.8 uA | 190.7 uA at Imax 100 A |
+| Dissipation at rated current | 1.8 W at 10.9 A | **7.5 W at 100 A** |
+
+That last row is why a 100 A shunt is a large finned block rather than a chip resistor. Mount it where it can shed heat, and expect its resistance to drift with temperature - a few hundred ppm/degC on a decent one, worse on a cheap one.
+
+**Steps:**
+
+1. **Remove the onboard shunt.** It is the large 2512 resistor between the VIN+ and VIN- terminals on the Adafruit 5832. Hot air is easiest; two irons also work. Leaving it in place puts 15 mOhm in parallel with the external shunt and silently scales every reading.
+2. **Wire the load current through the external shunt**, using conductors sized for the real current - at 100 A that is welding cable, not hookup wire.
+3. **Sense with a Kelvin (4-wire) pair.** Run IN+ / IN- from the shunt's **inner sense screws**, never the power lugs. This matters far more than it did for VBus (S3.1.2): at 100 A, even 0.1 mOhm of lug and joint resistance is 10 mV against a 75 mV signal - a 13 percent error. Twist the sense pair and keep it away from the power path.
+4. **Set the value** in `idf.py menuconfig` under Battery Monitor -> Hardware parameters:
+   `CONFIG_PM_RSHUNT_MICROOHM = 750`
+5. **Provision a matching Imax** with `ATS`. The firmware derives the allowed range from the shunt, so `ATS` will now accept up to ~218 A and reject beyond it:
+
+```
+ATS=LiIon,5S3P,12000,15.0,21.0,100.0,bigpack
+```
+
+> **VBus is unaffected.** Only the current path changes; the 0-85 V bus measurement and its solder link to VIN+ stay as they are.
+
+> **Resolution is the trade.** `CURRENT_LSB = Imax / 2^19`, so a 100 A ceiling gives 191 uA steps against 20.8 uA on the stock shunt. Still far finer than any voltage-based estimate, but set `Imax` to the current you actually expect rather than the shunt's ceiling - and below 54 A on this shunt the driver selects ADCRANGE=1 for 4x finer resolution automatically.
+
+If you fit some other shunt, `R = rated_mV / rated_A`. A 50 mV / 50 A part is 1 mOhm; a 75 mV / 200 A part is 375 uOhm.
 
 ---
 

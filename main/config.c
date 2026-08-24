@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,9 +100,20 @@ bool config_parse(const char *args, battery_config_t *out,
     return false;
   }
   out->imax = strtof(f[5], &end);
-  if (*end || out->imax < 0.01f || out->imax > 10.0f) {
-    *err_field = "Imax (0.01..10)";
-    return false;
+  // The ceiling comes from the shunt, not a constant: Imax x Rshunt must stay
+  // inside the INA228's +/-163.84 mV full-scale window. With the stock 15 mOhm
+  // shunt that is 10.9 A; with an external 0.75 mOhm (FL-2 75 mV / 100 A) it is
+  // over 200 A. Hardcoding 10 A would make an external shunt unprovisionable.
+  {
+    float rshunt = CONFIG_PM_RSHUNT_MICROOHM / 1e6f;
+    float imax_max = 0.16384f / rshunt;
+    if (*end || out->imax < 0.001f || out->imax > imax_max) {
+      static char msg[64];
+      snprintf(msg, sizeof(msg), "Imax (0.001..%.1f for %d uOhm shunt)",
+               imax_max, CONFIG_PM_RSHUNT_MICROOHM);
+      *err_field = msg;
+      return false;
+    }
   }
 
   // pack_id is optional. Multiple interchangeable packs each keep their own

@@ -60,9 +60,14 @@ config PM_RSHUNT_MICROOHM
     int "Shunt resistance (microohms)"
     default 15000
     help
-        15000 = the 15 mOhm shunt on the Adafruit INA228 breakout (PN 5832).
-        Change this if you fit an external shunt; the driver recomputes
-        SHUNT_CAL from it and the Imax given by ATS.
+        15000 = the 15 mOhm shunt on the Adafruit INA228 breakout (PN 5832),
+        good for about +/-10.9 A.
+
+        For higher currents, remove the onboard shunt and fit an external one:
+        an FL-2 75 mV / 100 A is 750 uOhm, giving a ceiling above 200 A. The
+        driver recomputes SHUNT_CAL and picks ADCRANGE from this value and the
+        Imax given by ATS, and ATS validates Imax against it. See hardware.md
+        S3.4.
 
 config PM_INA_I2C_ADDR
     hex "INA228 I2C address"
