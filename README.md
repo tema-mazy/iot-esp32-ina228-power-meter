@@ -165,9 +165,32 @@ across reboots on macOS.
 | 2 Transport + log buffer | done |
 | 3 AT core | done |
 | 4 `ATS` provisioning + NVS | done |
-| 5 Fuel gauge | next |
+| 5 Fuel gauge | done |
 | 6 OTA | done (built early) |
 | 7 Host-side reader | done |
+
+## Measured
+
+Real data from the device, on a 5S1P 18650 Li-ion pack. Regenerate with
+`docs/regen.sh`.
+
+![Discharge curve](docs/discharge-curve.svg)
+
+![IR compensation](docs/ir-compensation.svg)
+
+The gauge learns pack internal resistance from load steps. On this pack it
+settled at **0.92 ohm**, confirmed three independent ways (regression over 61
+samples, a single load step, and a live reading). IR compensation makes the
+open-circuit estimate roughly **11x more stable** than raw voltage as the load
+swings.
+
+![Load with HDMI](docs/load-hdmi.svg)
+
+![Load without HDMI](docs/load-nohdmi.svg)
+
+Those two are the same Pi at nearly the same mean power (2.74 W vs 2.82 W), but
+the current spread collapses from 319 mA to 27 mA when HDMI is unplugged. The
+undervoltage warnings were caused by **transients**, not average draw.
 
 `ATA` currently reports live V, I, P, temperature, charge and energy. SoC fields arrive with the gauge in Phase 5 - they are omitted rather than emitted as nulls, so nothing can bind to values that do not yet mean anything.
 

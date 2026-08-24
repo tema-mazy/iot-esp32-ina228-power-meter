@@ -1,8 +1,10 @@
 #include "storage.h"
+#include "gauge.h"
 
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "storage";
@@ -77,4 +79,38 @@ esp_err_t storage_load_config(battery_config_t *out) {
     return err;
 
   return storage_load_pack(pack_id, out);
+}
+
+// Gauge state uses a "g_" prefixed key so it cannot collide with a pack_id.
+static void gauge_key(const char *pack_id, char *out, size_t len) {
+  snprintf(out, len, "g_%.13s", pack_id);
+}
+
+esp_err_t storage_save_gauge(const char *pack_id, const gauge_persist_t *st) {
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+  if (err != ESP_OK)
+    return err;
+  char key[CFG_PACK_ID_MAX + 2];
+  gauge_key(pack_id, key, sizeof(key));
+  err = nvs_set_blob(h, key, st, sizeof(*st));
+  if (err == ESP_OK)
+    err = nvs_commit(h);
+  nvs_close(h);
+  return err;
+}
+
+esp_err_t storage_load_gauge(const char *pack_id, gauge_persist_t *out) {
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(NS, NVS_READONLY, &h);
+  if (err != ESP_OK)
+    return err;
+  char key[CFG_PACK_ID_MAX + 2];
+  gauge_key(pack_id, key, sizeof(key));
+  size_t len = sizeof(*out);
+  err = nvs_get_blob(h, key, out, &len);
+  nvs_close(h);
+  if (err == ESP_OK && len != sizeof(*out))
+    return ESP_ERR_NVS_NOT_FOUND;
+  return err;
 }

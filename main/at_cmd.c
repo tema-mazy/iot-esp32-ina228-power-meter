@@ -11,10 +11,12 @@
 #include "link.h"
 #include "logbuf.h"
 #include "config.h"
+#include "gauge.h"
 #include "ota.h"
 #include "storage.h"
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define AT_LINE_MAX 256
@@ -33,7 +35,8 @@ static bool             s_cfg_valid;
 bool at_get_config(battery_config_t *out) {
   if (!s_cfg_valid)
     return false;
-  *out = s_cfg;
+  if (out)
+    *out = s_cfg;
   return true;
 }
 
@@ -91,13 +94,29 @@ static void cmd_ata(void) {
     reply_err(AT_ERR_INA, "no valid reading");
     return;
   }
-  // SoC fields are absent until the gauge lands in Phase 5. Emitting them as
-  // nulls now would let a host bind to values that do not yet mean anything.
-  link_printf("{\"v\":%.4f,\"i\":%.5f,\"p\":%.4f,\"t\":%.1f,"
-              "\"q_c\":%.3f,\"e_j\":%.2f,\"err\":%u}\r\n",
-              r.bus_v, r.current_a, r.power_w, r.temp_c, r.charge_c, r.energy_j,
-              (unsigned)(r.diag & (INA228_DIAG_ENERGYOF | INA228_DIAG_CHARGEOF |
-                                   INA228_DIAG_MATHOF)));
+  unsigned err = (unsigned)(r.diag & (INA228_DIAG_ENERGYOF |
+                                      INA228_DIAG_CHARGEOF |
+                                      INA228_DIAG_MATHOF));
+  gauge_info_t g;
+  if (at_get_config(NULL) && gauge_get(&g)) {
+    link_printf("{\"v\":%.4f,\"i\":%.5f,\"p\":%.4f,\"t\":%.1f,"
+                "\"soc\":%.1f,\"mah_left\":%.0f,\"mah_used\":%.0f,"
+                "\"wh\":%.2f,\"v_ocv\":%.4f,\"r\":%.3f,"
+                "\"state\":\"%s\",\"est\":%s,"
+                "\"q_c\":%.3f,\"e_j\":%.2f,\"err\":%u}\r\n",
+                r.bus_v, r.current_a, r.power_w, r.temp_c, g.soc, g.mah_left,
+                g.mah_used, g.wh_left, g.v_ocv, g.r_total,
+                gauge_mode_name(g.mode), g.est ? "true" : "false",
+                r.charge_c, r.energy_j, err);
+  } else {
+    // Unprovisioned: still a working voltmeter and ammeter. SoC fields are
+    // omitted rather than emitted as nulls, so a host cannot bind to values
+    // that do not mean anything.
+    link_printf("{\"v\":%.4f,\"i\":%.5f,\"p\":%.4f,\"t\":%.1f,"
+                "\"q_c\":%.3f,\"e_j\":%.2f,\"err\":%u}\r\n",
+                r.bus_v, r.current_a, r.power_w, r.temp_c, r.charge_c,
+                r.energy_j, err);
+  }
   led_ok();
 }
 
@@ -225,6 +244,42 @@ static void cmd_ats_query(void) {
   ota_health_at_served();
 }
 
+// ATR: declare a battery swap and assume the new pack is full.
+static void cmd_atr(void) {
+  battery_config_t cfg;
+  if (!at_get_config(&cfg)) {
+    reply_err(AT_ERR_NOCONFIG, "no battery provisioned, use ATS=");
+    return;
+  }
+  ina228_reading_t r;
+  if (!snapshot(&r)) {
+    reply_err(AT_ERR_INA, "no valid reading");
+    return;
+  }
+  if (!gauge_reseed_full(&cfg, &r)) {
+    reply_err(AT_ERR_PARAM, "voltage says the pack is not full");
+    return;
+  }
+  reply_ok();
+}
+
+// ATC=<mAh>: force remaining capacity.
+static void cmd_atc(const char *args) {
+  battery_config_t cfg;
+  if (!at_get_config(&cfg)) {
+    reply_err(AT_ERR_NOCONFIG, "no battery provisioned, use ATS=");
+    return;
+  }
+  char *end = NULL;
+  float mah = strtof(args, &end);
+  if (end == args || *end || mah < 0 || mah > (float)cfg.capacity_mah) {
+    reply_err(AT_ERR_PARAM, "mAh (0..capacity)");
+    return;
+  }
+  gauge_set_remaining(&cfg, mah);
+  reply_ok();
+}
+
 static void cmd_atz(void) {
   reply_ok();
   vTaskDelay(pdMS_TO_TICKS(100)); // let the response drain before the reset
@@ -263,14 +318,11 @@ static void handle_line(char *line) {
   if (!strncmp(cmd, "FW=", 3)) { cmd_atfw(cmd + 3); return; }
   if (!strcmp(cmd, "S?"))      { cmd_ats_query();   return; }
   if (!strncmp(cmd, "S=", 2))  { cmd_ats(cmd + 2);  return; }
+  if (!strcmp(cmd, "R"))       { cmd_atr();         return; }
+  if (!strncmp(cmd, "C=", 2))  { cmd_atc(cmd + 2);  return; }
 
   // Phase 4/5/6 commands, deliberately reported as not-yet-implemented rather
   // than unknown, so a host can tell "wrong firmware version" from "typo".
-  if (!strncmp(cmd, "R", 1) || !strncmp(cmd, "C=", 2)) {
-    reply_err(AT_ERR_UNKNOWN, "not implemented in this phase");
-    return;
-  }
-
   reply_err(AT_ERR_UNKNOWN, "unknown command");
 }
 

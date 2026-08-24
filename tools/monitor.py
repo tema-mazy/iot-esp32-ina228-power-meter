@@ -25,6 +25,13 @@ import threading
 import time
 
 try:
+    from predict import Predictor
+except ImportError:                      # running from another directory
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from predict import Predictor
+
+try:
     import serial
 except ImportError:
     sys.exit("pyserial not installed:  pip install pyserial")
@@ -222,11 +229,14 @@ def format_row(r):
     ]
     if "soc" in r:  # firmware phase 5 onward
         est = "?" if r.get("est") else " "
-        parts.append(f"{r['soc']:3d}%{est}")
+        parts.append(f"{r['soc']:5.1f}%{est}")
         if "mah_left" in r:
             parts.append(f"{r['mah_left']:6d} mAh")
         if r.get("state"):
             parts.append(f"{r['state']:<11}")
+        p = r.get("pred") or {}
+        if p.get("h_to_empty") is not None:
+            parts.append(f"~{p['h_to_empty']:.1f} h left")
     else:
         parts.append(f"{r.get('q_c', 0):9.3f} C")
     if r.get("err"):
@@ -280,10 +290,17 @@ def main():
                     help="serve the latest reading as JSON on this port")
     ap.add_argument("-n", "--count", type=int,
                     help="stop after N readings (default: run forever)")
+    ap.add_argument("--calibration", default="calibration.json",
+                    help="cross-run capacity calibration file")
+    ap.add_argument("--no-predict", action="store_true",
+                    help="do not embed predictions in the output")
     args = ap.parse_args()
 
     mon = Monitor(args.port, args.baud)
     server = StatusServer(args.http) if args.http else None
+    pred = None if args.no_predict else Predictor(args.calibration)
+    if pred and not args.json and pred.factor != 1.0:
+        print(f"capacity : x{pred.factor:.4f} from {len(pred.runs)} past run(s)")
 
     try:
         path = mon.connect()
@@ -300,6 +317,12 @@ def main():
     try:
         for reading in mon.poll(args.interval):
             reading["ts"] = time.time()
+            # Recorded as made. Recomputing predictions later from a corrected
+            # model would be scoring the model against itself.
+            if pred:
+                p = pred.predict(reading)
+                if p:
+                    reading["pred"] = p
             if args.json:
                 print(json.dumps(reading), flush=True)
             else:

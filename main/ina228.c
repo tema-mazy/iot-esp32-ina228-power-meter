@@ -184,6 +184,20 @@ esp_err_t ina228_init(const ina228_config_t *cfg) {
                       "calibration");
   ESP_RETURN_ON_ERROR(ina228_reset_accumulators(), TAG, "rstacc");
 
+  // Wait for the first conversion before returning. With AVG=64 at 1052 us a
+  // full set takes ~202 ms, and every register reads zero until then. A caller
+  // that reads immediately gets 0 V and 0 A, which looks exactly like a flat
+  // battery -- the fuel gauge seeded 0 % on a full pack because of this.
+  for (int i = 0; i < 20; i++) {
+    vTaskDelay(pdMS_TO_TICKS(25));
+    uint16_t diag = 0;
+    if (reg_read16(INA228_REG_DIAG_ALRT, &diag) == ESP_OK &&
+        (diag & INA228_DIAG_CNVRF)) {
+      ESP_LOGI(TAG, "first conversion ready after %d ms", (i + 1) * 25);
+      return ESP_OK;
+    }
+  }
+  ESP_LOGW(TAG, "no conversion-ready flag after 500 ms, continuing anyway");
   return ESP_OK;
 }
 

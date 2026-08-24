@@ -478,6 +478,46 @@ Shared state in a single struct behind a mutex; `ATA` takes a snapshot copy and 
 
 ---
 
+## 5.9 Measured results
+
+Charts are generated from the device's own logs by `docs/regen.sh`. SVG rather
+than PNG: it scales, adapts to light and dark via a media query inside the
+file, and is pure ASCII so it does not break the docs' encoding rule.
+
+![Discharge curve](docs/discharge-curve.svg)
+
+Discharge of a 5S1P 18650 Li-ion pack at ~150 mA, from 94.6 percent. The upper
+plateau is shallow - about 26 mV/cell per hour - which is why voltage alone
+cannot carry the gauge here and coulomb counting is primary.
+
+![IR compensation](docs/ir-compensation.svg)
+
+The same run with IR compensation applied. Raw voltage swings ~97 mV as the
+load moves between 97 and 201 mA; the corrected estimate holds within ~9 mV.
+`R_total` is learned from load steps and settled at **0.92 ohm** on this pack,
+agreeing across three independent methods:
+
+| Method | Result |
+|---|---|
+| Multiple regression, 61 samples, V ~ time + current | 0.859 - 0.936 ohm (R^2 0.9934) |
+| Single load step, 172 mA removed | 0.919 ohm |
+| Firmware's own running estimate | 0.916 - 0.928 ohm |
+
+That is 20x the 40-70 mOhm expected of the 5S3P 21700 pack, which is why
+`R_total` must be learned rather than assumed.
+
+![Load with HDMI](docs/load-hdmi.svg)
+
+![Load without HDMI](docs/load-nohdmi.svg)
+
+The same Pi, HDMI attached and removed. Mean input power barely moves (2.74 W
+against 2.82 W) but the current spread collapses from **319 mA to 27 mA**. The
+undervoltage warnings were caused by transients the small buck could not
+follow, not by average draw - a distinction average-power measurements alone
+would never have surfaced.
+
+---
+
 ## 6. Deferred: low-power storage mode
 
 > **! Probably never needed - kept for reference.** The monitor is **not stored connected to a battery**, so a stored battery loses nothing to it. The ~7 mA only flows while the system is assembled and in use, where it is negligible against the actual load. Implement this only if that usage pattern changes.
@@ -600,7 +640,7 @@ No `factory` partition - with dual OTA slots it only wastes flash. Both slots ta
 
 **Phase 4 - Config. DONE.** `ATS` / `ATS?`, validation, NVS persistence, calibration recompute. *Checkpoint: config survives power cycle; SHUNT_CAL changes measurably alter reported current.*
 
-**Phase 5 - Gauge.** Coulomb counting, anchors, re-seed, `ATA` / `ATR` / `ATC`. *Checkpoint: a controlled full-discharge on the real pack lands within 5% of the rated Ah; a mid-discharge power-cut loses <1% of count.*
+**Phase 5 - Gauge. DONE.** Coulomb counting, anchors, re-seed, `ATA` / `ATR` / `ATC`. *Checkpoint: a controlled full-discharge on the real pack lands within 5% of the rated Ah; a mid-discharge power-cut loses <1% of count.*
 
 **Phase 6 - OTA. DONE** (built early; it makes every later phase flashable over the link). `ATFW`, MD5, rollback with the health-gated confirm. *Checkpoint: >=10 successful updates, plus a deliberately corrupted image that is rejected, plus an image that hangs on boot and is correctly rolled back.*
 

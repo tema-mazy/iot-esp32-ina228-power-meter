@@ -15,3 +15,5 @@ __pycache__/
 *.pyc
 *.jsonl
 discharge.err
+*.html
+calibration.json

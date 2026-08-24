@@ -54,7 +54,22 @@ def main():
 
     first, last = rows[0], rows[-1]
     dt_s = last["ts"] - first["ts"]
-    dq_c = last["q_c"] - first["q_c"]
+
+    # The INA228 CHARGE register is volatile: it resets to zero on every
+    # device reboot (ATZ, OTA, or a battery disconnect). Summing per-sample
+    # deltas and ignoring the negative jumps keeps the total correct across
+    # a restart, where last-minus-first would report a large negative value.
+    dq_c = 0.0
+    resets = 0
+    for a_, b_ in zip(rows, rows[1:]):
+        step = b_["q_c"] - a_["q_c"]
+        if step < -1.0:          # counter went backwards: a reset, not a charge
+            resets += 1
+            continue
+        dq_c += step
+    if resets:
+        print(f"note        : {resets} CHARGE reset(s) detected and skipped "
+              f"(device rebooted mid-log)")
     dmah = dq_c / 3.6
     currents = [r["i"] for r in rows]
     volts = [r["v"] for r in rows]

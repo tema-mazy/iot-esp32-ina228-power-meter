@@ -10,6 +10,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gauge.h"
 #include "ina228.h"
 #include "led.h"
 #include "link.h"
@@ -87,6 +88,7 @@ static void gauge_task(void *arg) {
       .imax_a      = imax,
   };
 
+  bool gauge_started = false;
   bool ok = (ina228_init(&cfg) == ESP_OK);
   if (ok)
     ota_health_ina_ok();
@@ -117,6 +119,17 @@ static void gauge_task(void *arg) {
       continue;
     }
     at_publish(&r, true);
+
+    // The gauge needs a battery config to mean anything; without one the
+    // device is still a working voltmeter and ammeter.
+    battery_config_t bcfg;
+    if (at_get_config(&bcfg)) {
+      if (!gauge_started) {
+        gauge_init(&bcfg, &r);
+        gauge_started = true;
+      }
+      gauge_update(&bcfg, &r, 1.0f);
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
