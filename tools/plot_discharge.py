@@ -223,28 +223,39 @@ async function fetchRows(){
 }
 
 function panelSpecs(rows){
-  const N=CFG.series, t0=rows[0].ts, hrs=rows.map(r=>(r.ts-t0)/3600);
-  // Any interval far larger than the sampling period is a gap: the device was
-  // disconnected, or this is a separate run. Shaded, and the line is broken.
-  const GAPH = 10/60;
-  const gaps=[];
-  for (let i=1;i<hrs.length;i++)
-    if (hrs[i]-hrs[i-1] > GAPH) gaps.push([hrs[i-1],hrs[i]]);
+  const N=CFG.series, t0=rows[0].ts;
+  // Wall-clock time wastes the plot on gaps: 340 samples spanning 18 h of
+  // which only 3 h contain data leaves 80 percent of the width empty. Collapse
+  // each gap to a fixed spacer so every sample gets real width, and mark where
+  // the collapse happened - these are separate runs, not continuous data.
+  const GAPH = 10/60, SPACER = 0.12;
+  const hrs=[]; const breaks=[];
+  let ct=0, prev=null;
+  for (const r of rows){
+    if (prev!==null){
+      const dt=(r.ts-prev)/3600;
+      if (dt>GAPH){ breaks.push([ct, ct+SPACER, dt]); ct+=SPACER; }
+      else ct+=dt;
+    }
+    hrs.push(ct); prev=r.ts;
+  }
+  const gaps=breaks.map(b=>[b[0],b[1]]);
+  rows.forEach((r,i)=>{ r._h = hrs[i]; });
   const f2=v=>v.toFixed(2), f0=v=>v.toFixed(0), f1=v=>v.toFixed(1), f3=v=>v.toFixed(3);
   const P=[];
-  P.push({key:'v', title:'Pack voltage', ylabel:'V', xlabel:'hours', fy:f2, fx:f1,
+  P.push({key:'v', title:'Pack voltage', ylabel:'V', xlabel:'logging hours (gaps collapsed)', fy:f2, fx:f1,
     note:'IR-corrected removes the sag from load current, using the resistance the firmware learned.',
-    gapX:GAPH, gaps, series:[
+    gapX:SPACER*0.9, gaps, series:[
       {label:'measured', slot:1, pts:rows.map((r,i)=>[hrs[i],r.v])},
-      {label:'IR-corrected', slot:2, pts:rows.filter(r=>r.v_ocv!==undefined).map(r=>[(r.ts-t0)/3600,r.v_ocv])},
+      {label:'IR-corrected', slot:2, pts:rows.filter(r=>r.v_ocv!==undefined).map(r=>[r._h,r.v_ocv])},
     ]});
-  P.push({key:'i', title:'Load current', ylabel:'mA', xlabel:'hours', fy:f0, fx:f1,
-    note:'', gapX:GAPH, gaps, series:[{label:'current', slot:1, pts:rows.map((r,i)=>[hrs[i],r.i*1000])}]});
+  P.push({key:'i', title:'Load current', ylabel:'mA', xlabel:'logging hours (gaps collapsed)', fy:f0, fx:f1,
+    note:'', gapX:SPACER*0.9, gaps, series:[{label:'current', slot:1, pts:rows.map((r,i)=>[hrs[i],r.i*1000])}]});
   if (rows.some(r=>r.soc!==undefined)){
-    P.push({key:'soc', title:'State of charge', ylabel:'%', xlabel:'hours', fy:f1, fx:f1,
+    P.push({key:'soc', title:'State of charge', ylabel:'%', xlabel:'logging hours (gaps collapsed)', fy:f1, fx:f1,
       note:'Coulomb count is the gauge. OCV lookup is what voltage alone would say - the gap is IR sag plus curve flatness.',
-      gapX:GAPH, gaps, series:[
-        {label:'coulomb count', slot:1, pts:rows.filter(r=>r.soc!==undefined).map(r=>[(r.ts-t0)/3600,r.soc])},
+      gapX:SPACER*0.9, gaps, series:[
+        {label:'coulomb count', slot:1, pts:rows.filter(r=>r.soc!==undefined).map(r=>[r._h,r.soc])},
         {label:'OCV lookup', slot:2, dashed:true, pts:rows.map((r,i)=>[hrs[i],socFromOcv((r.v_ocv!==undefined?r.v_ocv:r.v)/N)])},
       ]});
     P.push({key:'ocv', title:'OCV curve vs firmware table', ylabel:'V/cell', xlabel:'SoC %', fy:f3, fx:f0,
@@ -258,17 +269,17 @@ function panelSpecs(rows){
   if (pr.length){
     const last=rows[rows.length-1], vpc=last.v/N;
     const done = vpc<=3.05 || (last.soc!==undefined&&last.soc<=2);
-    const s=[{label:'predicted', slot:1, pts:pr.map(r=>[(r.ts-t0)/3600,(r.pred.empty_ts-t0)/3600])}];
+    const s=[{label:'predicted', slot:1, pts:pr.map(r=>[r._h,(r.pred.empty_ts-r.ts)/3600])}];
     if (done){
       const e=(last.ts-t0)/3600;
       s.push({label:'actual', slot:2, dashed:true,
-              pts:[[(pr[0].ts-t0)/3600,e],[(pr[pr.length-1].ts-t0)/3600,e]]});
+              pts:[[pr[0]._h,0],[pr[pr.length-1]._h,0]]});
     }
     P.push({key:'pred', title:'Predicted time of empty (recorded as made)',
-      ylabel:'hours from start', xlabel:'hours', fy:f1, fx:f1,
-      note:done?'Converging on the dashed line means the prediction was right.'
+      ylabel:'hours remaining', xlabel:'logging hours (gaps collapsed)', fy:f1, fx:f1,
+      note:done?'Converging on zero at the right edge means the prediction was right.'
                 :'Flattening out means the prediction is settling. The actual line appears once the run reaches empty.',
-      gapX:GAPH, gaps, series:s});
+      gapX:SPACER*0.9, gaps, series:s});
   }
   return P;
 }
@@ -280,14 +291,31 @@ function stats(rows){
     const step=rows[i].q_c-rows[i-1].q_c;
     if (step>=-1) dq+=step;              // skip CHARGE resets across reboots
   }
-  const mah=dq/3.6, hrs=(last.ts-first.ts)/3600;
+  // Active logging time, not wall clock: gaps are not measurement.
+  let active=0;
+  for (let i=1;i<rows.length;i++){
+    const dt=(rows[i].ts-rows[i-1].ts)/3600;
+    if (dt<=10/60) active+=dt;
+  }
+  // Consumption is reported for the CURRENT run only. Summing across a
+  // recharge adds two unrelated quantities and reads as one number.
+  let runStart=0;
+  for (let i=1;i<rows.length;i++)
+    if ((rows[i].ts-rows[i-1].ts)/3600 > 10/60) runStart=i;
+  let dqRun=0;
+  for (let i=runStart+1;i<rows.length;i++){
+    const st=rows[i].q_c-rows[i-1].q_c;
+    if (st>=-1) dqRun+=st;
+  }
+  const mahRun=dqRun/3.6;
+  const runH=(last.ts-rows[runStart].ts)/3600;
   const p=last.pred||{};
   return [
     ['SoC', last.soc!==undefined?last.soc.toFixed(1)+'%':'-'],
     ['V/cell', (last.v/N).toFixed(3)],
     ['current', (last.i*1000).toFixed(0)+' mA'],
-    ['consumed', mah.toFixed(0)+' mAh'],
-    ['elapsed', hrs.toFixed(2)+' h'],
+    ['this run', mahRun.toFixed(0)+' mAh / '+runH.toFixed(2)+' h'],
+    ['all logs', active.toFixed(2)+' h active, '+rows.length+' samples'],
     ['predicted left', p.h_to_empty!=null?p.h_to_empty.toFixed(1)+' h':'-'],
     ['capacity factor', p.factor!=null?'x'+p.factor.toFixed(3):'-'],
   ];

@@ -14,6 +14,10 @@ dependencies.lock
 __pycache__/
 *.pyc
 *.jsonl
+# ...but keep the archived runs the docs draw their charts and numbers from,
+# otherwise docs/regen.sh cannot be run from a fresh clone and every measured
+# claim in DEVELOPMENT_PLAN.md S5.9 is unverifiable. ~310 KB total.
+!discharge-run*.jsonl
 discharge.err
 *.html
 calibration.json

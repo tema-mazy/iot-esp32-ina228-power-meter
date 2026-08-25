@@ -490,9 +490,67 @@ Discharge of a 5S1P 18650 Li-ion pack at ~150 mA, from 94.6 percent. The upper
 plateau is shallow - about 26 mV/cell per hour - which is why voltage alone
 cannot carry the gauge here and coulomb counting is primary.
 
+### 5.9.1 Full run to converter dropout
+
+![Discharge knee](docs/discharge-knee.svg)
+
+Run 5: 578 samples over 9.58 h at ~150-190 mA, 80.4 percent down to 3.7
+percent, **1532.6 mAh delivered**. This is the first log that reaches the knee,
+and the shape below 3.4 V/cell is territory the OCV table had never been
+validated against. The slope steepens by a factor of 45 across the run:
+
+| Region | V/cell | Slope |
+|---|---|---|
+| Upper plateau | 3.97 - 3.80 | ~-10 mV/cell/h |
+| Mid | 3.80 - 3.45 | -79 to -90 mV/cell/h |
+| Knee entry | 3.45 - 3.30 | -107 to -139 mV/cell/h |
+| Knee | 3.30 - 3.19 | -196 to -362 mV/cell/h |
+| Tail | 3.19 - 3.09 | -447 mV/cell/h |
+
+`R_total` rose with depth of discharge, from **0.92 ohm** mid-run to **1.02
+ohm** at the knee - as expected, and another argument for learning it
+continuously rather than measuring it once.
+
+![Coulomb SoC](docs/discharge-soc.svg)
+
+The coulomb-counted SoC over the same run is a **straight line**. That is the
+point of putting it beside the voltage curve: at constant current the count
+carries no knowledge of the knee whatsoever. Everything the gauge knows about
+approaching empty comes from voltage, which is why the OCV table and IR
+compensation matter even though counting is primary.
+
+### 5.9.2 ! The run did not measure capacity
+
+`tools/calibrate.py` **refused to calibrate on this run, correctly.** Two
+independent reasons:
+
+1. **It did not start full** - 80.4 percent, not 100.
+2. **It did not end empty.** The run was terminated by the Pi's DC-DC dropping
+   out of regulation at **15.456 V (3.091 V/cell) under 193 mA**, not by the
+   BMS and not by the cells. Current fell 193 mA -> 2.2 mA in one sample
+   interval and pack voltage *rebounded* +47 mV/cell over the next 13 minutes,
+   to 3.138 V/cell. A pack that recovers like that is not empty.
+
+**Beware the circular number.** 1532.6 mAh across 76.7 percent of SoC implies
+1998 mAh, which looks like a triumphant confirmation of the 2000 mAh label. It
+is nothing of the kind: SoC here *is* the coulomb count divided by the 2000 mAh
+given to `ATS`, so the arithmetic can only ever hand back 2000. It is not
+evidence. Capacity remains unmeasured until one uninterrupted 100-percent-to-
+cutoff run exists.
+
+What the run does establish is **usable** capacity: ~1533 mAh from 80 percent,
+so roughly 1900 mAh from full, *down to the converter's dropout*. Charge below
+that point is unreachable by this load no matter what the cells hold, which
+makes it the operationally meaningful figure.
+
+The pack's own 4-LED indicator corroborated the gauge three times
+independently, which is worth recording because it is the only external
+reference available: 2 bars at 34.3 percent (band 25-50), the 2-to-1 transition
+at 27.0 percent against a predicted 25, and 1 bar blinking at 3.7 percent.
+
 ![IR compensation](docs/ir-compensation.svg)
 
-The same run with IR compensation applied. Raw voltage swings ~97 mV as the
+Run 5 with IR compensation applied. Raw voltage swings ~97 mV as the
 load moves between 97 and 201 mA; the corrected estimate holds within ~9 mV.
 `R_total` is learned from load steps and settled at **0.92 ohm** on this pack,
 agreeing across three independent methods:

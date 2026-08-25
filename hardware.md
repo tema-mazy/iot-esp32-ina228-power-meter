@@ -475,6 +475,14 @@ Power down:  battery OFF         ->  monitor supply OFF
 
 If you must run split-powered for firmware work, the practical rule is: **unplug the battery before the notebook sleeps.**
 
+#### 5.2.1 Side effect: pulling the pack while the monitor runs zeroes the gauge
+
+Observed at the end of run 5. With the ESP32 still USB-powered, disconnecting the pack made the INA228 read the bus at **0.039 V, then 0.011 V** with `err:0` - correct measurements of an absent battery. The gauge treated that as a valid rest voltage, seeded from OCV, and latched `soc:0.0`, `mah_left:0`, `mah_used:2000`.
+
+**It self-corrects**, and by design: on reconnect a charged pack reads ~21 V, far outside `GAUGE_SAME_PACK_MV_PER_CELL` of the stored `last_v` of ~0 V, so the gauge rejects the stored count and re-seeds from OCV. No action needed.
+
+But two things follow. First, **the last few samples of any log that ends with a pack disconnect are not battery data** and must be excluded from analysis - `tools/svg_chart.py --min-bus-v 1.0` does this, and without it the zero readings pin the y-axis and flatten the entire curve. Second, a plausible firmware hardening is to refuse OCV seeding below roughly 0.5 V/cell and log the disconnect instead; the present behaviour is harmless only because the same-pack check happens to catch it afterwards.
+
 ### 5.3 Bench development without a battery
 
 Keep a **second, unmodified USB-C cable**. With the buck disconnected, a normal cable powers the SuperMini from the PC and everything except battery measurement works - fine for protocol, OTA and UI development. Two cables, no board modifications, no diode-OR circuitry.
@@ -567,6 +575,17 @@ Consequences, all favourable:
 ### 7.3 Voltage ceiling
 
 Max pack voltage is **21.0 V**, up from 18.25 V for a 5S LiFePO4 pack. Confirm the Pi's DC-DC accepts it. (Had the ESP32 needed its own pack-side converter, the mini360's 23 V absolute maximum would leave only 2 V of margin - another reason the S11 topology is the right one.)
+
+### 7.3.1 ! The converter sets the floor, not the cells
+
+**Measured, run 5:** the load died at **15.456 V (3.091 V/cell) drawing 193 mA**. That was the Pi's DC-DC falling out of regulation - not the BMS, and not the cells. Confirmation is unambiguous: current dropped 193 mA -> 2.2 mA in one 60 s interval, and pack voltage then *rose* 47 mV/cell over 13 minutes as the cells relaxed. The pack still held charge the converter could no longer reach.
+
+Two consequences:
+
+- **`Vmin` in `ATS` should describe the system, not the chemistry.** The table above puts cutoff at 3.00 V/cell = 15.0 V, but the Pi is already dead at 15.46 V. A gauge provisioned with `Vmin=15.0` reports charge remaining that no load can use, and its time-to-empty prediction overruns by the whole tail. For this pack plus this converter, **`Vmin=15.5` is the honest number.**
+- **Measuring true cell capacity needs a different load.** Any capacity run through this converter is bounded by converter dropout, so it measures the system, not the pack. Use a bench load taken to the BMS cutoff if the cells' actual capacity is the question.
+
+The general rule: on a battery-plus-converter system there are two distinct "empty" points, and the higher one wins. Provision for the one that matters to the user, which is almost always the point where their load stops working.
 
 ### 7.4 Multiple packs
 

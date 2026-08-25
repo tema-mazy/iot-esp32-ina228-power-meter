@@ -158,9 +158,21 @@ def main():
     ap.add_argument("--ylabel", default="")
     ap.add_argument("--xlabel", default="hours")
     ap.add_argument("--caption", default="")
+    ap.add_argument("--min-bus-v", type=float,
+                    help="discard rows whose bus voltage is under this, "
+                         "whatever is being plotted. Readings taken with the "
+                         "pack disconnected sit near 0 V - a true measurement "
+                         "of nothing - and would otherwise pin the y-axis to "
+                         "zero and flatten the curve.")
     args = ap.parse_args()
 
     rows = load(args.logs)
+    if args.min_bus_v is not None:
+        keep = [r for r in rows if r.get("v", 0.0) >= args.min_bus_v]
+        if len(keep) != len(rows):
+            print(f"dropped {len(rows) - len(keep)} row(s) with "
+                  f"bus v < {args.min_bus_v} (pack disconnected)")
+        rows = keep
     if len(rows) < 2:
         sys.exit("need at least 2 samples")
     t0 = rows[0]["ts"]
