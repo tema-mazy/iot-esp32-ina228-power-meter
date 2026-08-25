@@ -99,6 +99,9 @@ const char *gauge_mode_name(gauge_mode_t m) {
 
 // ---- seeding ----------------------------------------------------------------
 
+// v_pack must already be IR-compensated. Seeding from a loaded voltage
+// charges the whole IR drop against state of charge: on a 0.94 ohm pack at
+// 300 mA that is 56 mV/cell, worth 5.6 percent SoC.
 static void seed_from_ocv(const battery_config_t *cfg, float v_pack,
                           const char *why) {
   bool est = false;
@@ -138,7 +141,11 @@ void gauge_init(const battery_config_t *cfg, const ina228_reading_t *first) {
       s_st.mah_full = (float)cfg->capacity_mah;
   }
 
-  float v = first ? first->bus_v : 0.0f;
+  // Compensate before comparing or seeding. r_total is persisted, so it is
+  // available on every boot after the pack's first.
+  float v = 0.0f;
+  if (first && first->bus_v > 0.5f)
+    v = first->bus_v + first->current_a * s_st.r_total;
   if (v <= 0.5f) {
     // Seeding from a zero reading would report an empty battery on a full
     // pack. Wait for a real measurement instead.
@@ -154,6 +161,9 @@ void gauge_init(const battery_config_t *cfg, const ina228_reading_t *first) {
     // The monitor is powered by the battery, so a power-on reset means the
     // pack was disconnected. If it comes back at the voltage we left it at,
     // it is the same pack undisturbed and the stored count beats OCV.
+    // last_v is stored IR-compensated too, so this compares like with like.
+    // Comparing a loaded reading against a resting one would flag every
+    // reconnect under load as a different pack.
     float delta_per_cell = fabsf(v - s_st.last_v) / cfg->series * 1000.0f;
     if (delta_per_cell <= GAUGE_SAME_PACK_MV_PER_CELL) {
       ESP_LOGI(TAG, "restored %.0f mAh (%.1f%%), voltage moved %.0f mV/cell",
@@ -173,6 +183,7 @@ void gauge_init(const battery_config_t *cfg, const ina228_reading_t *first) {
 
 // ---- update -----------------------------------------------------------------
 
+// v must be IR-compensated: gauge_init compares against it directly.
 static void save(const battery_config_t *cfg, float v) {
   s_st.last_v = v;
   if (storage_save_gauge(cfg->pack_id, &s_st) == ESP_OK) {
@@ -197,9 +208,9 @@ void gauge_update(const battery_config_t *cfg, const ina228_reading_t *r,
   // A deferred seed waits for a plausible voltage rather than taking the next
   // reading regardless -- the next one can still be zero.
   if (s_need_seed && r->bus_v > 0.5f) {
-    seed_from_ocv(cfg, r->bus_v, "deferred seed");
+    seed_from_ocv(cfg, r->bus_v + r->current_a * s_st.r_total, "deferred seed");
     s_need_seed = false;
-    save(cfg, r->bus_v);
+    save(cfg, r->bus_v + r->current_a * s_st.r_total);
   }
 
   double delta_c = r->charge_c - s_last_charge_c;
@@ -285,7 +296,7 @@ void gauge_update(const battery_config_t *cfg, const ina228_reading_t *r,
       s_st.full_charges++;
       s_mode = GS_FULL;
       s_anchor_held_s = 0;
-      save(cfg, r->bus_v);
+      save(cfg, s_v_ocv);
     }
   } else {
     s_anchor_held_s = 0;
@@ -297,7 +308,7 @@ void gauge_update(const battery_config_t *cfg, const ina228_reading_t *r,
              s_st.mah_remaining);
     s_st.mah_remaining = 0;
     s_st.est = false;
-    save(cfg, r->bus_v);
+    save(cfg, s_v_ocv);
   }
 
   // ---- persistence ----
@@ -306,7 +317,7 @@ void gauge_update(const battery_config_t *cfg, const ina228_reading_t *r,
   s_since_save_s += dt_s;
   if (s_since_save_s >= 30.0f ||
       fabsf(s_st.mah_remaining - s_mah_at_save) >= 10.0f)
-    save(cfg, r->bus_v);
+    save(cfg, s_v_ocv);
 }
 
 bool gauge_get(gauge_info_t *out) {
@@ -341,7 +352,7 @@ bool gauge_reseed_full(const battery_config_t *cfg,
 
   s_st.mah_remaining = s_st.mah_full;
   s_st.est = false;
-  save(cfg, r->bus_v);
+  save(cfg, r->bus_v + r->current_a * s_st.r_total);
   ESP_LOGI(TAG, "reseeded to full (%.0f mAh)", s_st.mah_full);
   return true;
 }

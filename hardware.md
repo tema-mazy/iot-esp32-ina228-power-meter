@@ -456,13 +456,32 @@ Orientation-independent rule: **power on the outside, data on the inside** - pin
 
 **Use a USB 2.0 cable, not 3.0.** A blue USB 3 Type-A has 9 pins including five SuperSpeed contacts to identify and ignore. The C3's USB Serial/JTAG is full-speed, so USB 3 adds nothing but confusion.
 
-### 5.2 Bench development without a battery
+### 5.2 ! Power-sequencing on the bench - battery OFF first
+
+**Disconnect the battery before removing power from the INA228. Reconnect in the opposite order.**
+
+The failure this prevents: with `VS` at 0 V and `VIN+`/`VBus` still held at pack voltage, the INA228's internal ESD and protection structures sit forward-biased into a dead supply rail. The datasheet's 10 nA leakage figure covers *shutdown mode with VS present* and says nothing about this state. It is not a documented operating condition, and current in the milliamp range is plausible.
+
+Measured consequence on this bench: a pack left overnight with the monitor unpowered but still wired lost about **130 mAh in 10 hours - roughly 13 mA**, against a DC-DC idle draw measured at 0.37 mA and a pack self-discharge budget under 1.5 mAh. Most of that drain is still unattributed, and this sequencing is the cheapest way to remove it as a variable.
+
+```
+Power up  :  monitor supply ON   ->  battery ON
+Power down:  battery OFF         ->  monitor supply OFF
+```
+
+**This cannot happen in the shipping design**, because the monitor is powered from the battery it measures (S11): `VS` and the bus inputs rise and fall together, so the dead-rail state does not exist. It is purely an artifact of the bench rig, which splits the two across separate sources - the monitor on host USB, the sensing side on the pack.
+
+> That asymmetry is itself an argument for wiring the bench the way the product works: fit the 9-36 V buck, power the monitor from the pack, and use the VBUS-cut USB cable for data only. Then the sequencing rule stops mattering because there is only one power domain.
+
+If you must run split-powered for firmware work, the practical rule is: **unplug the battery before the notebook sleeps.**
+
+### 5.3 Bench development without a battery
 
 Keep a **second, unmodified USB-C cable**. With the buck disconnected, a normal cable powers the SuperMini from the PC and everything except battery measurement works - fine for protocol, OTA and UI development. Two cables, no board modifications, no diode-OR circuitry.
 
 If you later want one cable to do both, Schottky-OR the buck output and VBUS - but that requires cutting the SuperMini's VBUS-to-`5V` trace, and is not worth it for a bench convenience.
 
-### 5.3 Ground reference - the one thing to get right
+### 5.4 Ground reference - the one thing to get right
 
 The INA228 measures **VBUS (battery voltage) relative to its own GND pin**, so that ground must sit at true battery negative for the reading to be accurate. Its *current* reading is differential across IN+/IN- and does not care.
 
@@ -575,6 +594,16 @@ The draw is itself measured by the INA228, so it is accounted for in the gauge r
 
 WiFi and Bluetooth stay off. An active radio averages 80-100 mA and would multiply this roughly tenfold - which is also why OTA runs over `ATFW` on the serial link rather than a WiFi AP and HTTP upload page.
 
+**Measured idle drain, bench rig.** A pack left connected overnight with the
+monitor unpowered lost ~130 mAh in 10 h (**~13 mA**). That is 25x the DC-DC's
+own idle draw measured at 0.37 mA, and ~15 %/day on a 2 Ah pack. Cause not yet
+isolated - candidates are the converter idling higher than a single spot
+reading suggested, and conduction through the INA228's protection structures
+while `VS` was dead (S5.2). Until it is measured properly, treat the `Iq < 1 mA`
+requirement in S11.4 as an **acceptance test to run on the actual module**, not
+a datasheet figure to trust: at 13 mA the monitor's supply would dominate the
+entire power budget.
+
 > Superseded figures: earlier revisions gave ~20 mA/350 mW (too high - assumed a heavier CPU/radio load than this firmware has) and later ~0 mA standby (correct only for the abandoned host-powered topology).
 
 ---
@@ -590,7 +619,10 @@ WiFi and Bluetooth stay off. An active radio averages 80-100 mA and would multip
 6. Known resistive load (e.g. 18 Ohm / 20 W -> ~1 A): current vs DMM within 1%. **Check the sign** - plan S2.3 defines positive as discharge.
 7. Only then attach the real pack, fuse installed, Pi's own DC-DC connected, Pi booting.
 8. Unplug the Pi's USB for 10 minutes and confirm the ESP32 neither stalls nor reboots - this is the blocking-write trap in plan S1.2 and it must be tested deliberately.
-9. Button/LED: double press -> SoC blinks match `ATA`. Long press on a full pack -> 5 blinks, `ATA` shows 100%. Long press on a half-empty pack -> flutter refusal, SoC **unchanged**.
+9. **Power sequencing (bench only):** battery OFF before monitor power OFF;
+   monitor power ON before battery ON. See S5.2 - leaving the INA228's inputs
+   energised with `VS` dead is not a documented operating state.
+10. Button/LED: double press -> SoC blinks match `ATA`. Long press on a full pack -> 5 blinks, `ATA` shows 100%. Long press on a half-empty pack -> flutter refusal, SoC **unchanged**.
 
 ---
 

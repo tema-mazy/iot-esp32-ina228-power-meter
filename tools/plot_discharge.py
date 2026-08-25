@@ -151,9 +151,17 @@ function draw(el, spec){
   o.push(`<line class="axis" x1="${PAD.l}" y1="${PAD.t+ph}" x2="${PAD.l+pw}" y2="${PAD.t+ph}"/>`);
   o.push(`<text class="axlabel" x="${PAD.l+pw/2}" y="${H-6}" text-anchor="middle">${spec.xlabel}</text>`);
   o.push(`<text class="axlabel" transform="translate(14,${PAD.t+ph/2}) rotate(-90)" text-anchor="middle">${spec.ylabel}</text>`);
+  // Break the path wherever samples are far apart in x. Drawing a straight
+  // line across a ten-hour gap between runs would read as measured data.
+  const GAP = spec.gapX || 0;
   for (const s of S){
-    const d=s.pts.map((p,i)=>(i?'L':'M')+px(p[0]).toFixed(1)+','+py(p[1]).toFixed(1)).join(' ');
-    o.push(`<path class="line s${s.slot}" d="${d}"${s.dashed?' stroke-dasharray="6 4"':''}/>`);
+    let d='', prev=null;
+    for (const p of s.pts){
+      const cmd = (prev===null || (GAP && p[0]-prev > GAP)) ? 'M' : 'L';
+      d += cmd + px(p[0]).toFixed(1) + ',' + py(p[1]).toFixed(1) + ' ';
+      prev = p[0];
+    }
+    o.push(`<path class="line s${s.slot}" d="${d.trim()}"${s.dashed?' stroke-dasharray="6 4"':''}/>`);
   }
   // Direct labels last, nudged apart where series end close together -
   // otherwise they overprint into an unreadable smear. Identity is never
@@ -168,6 +176,12 @@ function draw(el, spec){
   if (over>0) for (const l of lab) l.y -= over;   // keep them inside the plot
   for (const l of lab)
     o.push(`<text class="dlabel s${l.slot}f" x="${(l.x+8).toFixed(1)}" y="${(l.y+4).toFixed(1)}">${l.t}</text>`);
+  if (spec.gapX && spec.gaps){
+    for (const g of spec.gaps){
+      if (g[1]<x0||g[0]>x1) continue;
+      o.push(`<rect x="${px(g[0]).toFixed(1)}" y="${PAD.t}" width="${(px(g[1])-px(g[0])).toFixed(1)}" height="${ph}" fill="var(--ink2)" opacity="0.08"/>`);
+    }
+  }
   o.push(`<line class="cross" x1="0" y1="${PAD.t}" x2="0" y2="${PAD.t+ph}" style="display:none"/>`);
   o.push(`<rect class="hit" x="${PAD.l}" y="${PAD.t}" width="${pw}" height="${ph}" fill="transparent"/>`);
   o.push('</svg>');
@@ -210,20 +224,26 @@ async function fetchRows(){
 
 function panelSpecs(rows){
   const N=CFG.series, t0=rows[0].ts, hrs=rows.map(r=>(r.ts-t0)/3600);
+  // Any interval far larger than the sampling period is a gap: the device was
+  // disconnected, or this is a separate run. Shaded, and the line is broken.
+  const GAPH = 10/60;
+  const gaps=[];
+  for (let i=1;i<hrs.length;i++)
+    if (hrs[i]-hrs[i-1] > GAPH) gaps.push([hrs[i-1],hrs[i]]);
   const f2=v=>v.toFixed(2), f0=v=>v.toFixed(0), f1=v=>v.toFixed(1), f3=v=>v.toFixed(3);
   const P=[];
   P.push({key:'v', title:'Pack voltage', ylabel:'V', xlabel:'hours', fy:f2, fx:f1,
     note:'IR-corrected removes the sag from load current, using the resistance the firmware learned.',
-    series:[
+    gapX:GAPH, gaps, series:[
       {label:'measured', slot:1, pts:rows.map((r,i)=>[hrs[i],r.v])},
       {label:'IR-corrected', slot:2, pts:rows.filter(r=>r.v_ocv!==undefined).map(r=>[(r.ts-t0)/3600,r.v_ocv])},
     ]});
   P.push({key:'i', title:'Load current', ylabel:'mA', xlabel:'hours', fy:f0, fx:f1,
-    note:'', series:[{label:'current', slot:1, pts:rows.map((r,i)=>[hrs[i],r.i*1000])}]});
+    note:'', gapX:GAPH, gaps, series:[{label:'current', slot:1, pts:rows.map((r,i)=>[hrs[i],r.i*1000])}]});
   if (rows.some(r=>r.soc!==undefined)){
     P.push({key:'soc', title:'State of charge', ylabel:'%', xlabel:'hours', fy:f1, fx:f1,
       note:'Coulomb count is the gauge. OCV lookup is what voltage alone would say - the gap is IR sag plus curve flatness.',
-      series:[
+      gapX:GAPH, gaps, series:[
         {label:'coulomb count', slot:1, pts:rows.filter(r=>r.soc!==undefined).map(r=>[(r.ts-t0)/3600,r.soc])},
         {label:'OCV lookup', slot:2, dashed:true, pts:rows.map((r,i)=>[hrs[i],socFromOcv((r.v_ocv!==undefined?r.v_ocv:r.v)/N)])},
       ]});
@@ -248,7 +268,7 @@ function panelSpecs(rows){
       ylabel:'hours from start', xlabel:'hours', fy:f1, fx:f1,
       note:done?'Converging on the dashed line means the prediction was right.'
                 :'Flattening out means the prediction is settling. The actual line appears once the run reaches empty.',
-      series:s});
+      gapX:GAPH, gaps, series:s});
   }
   return P;
 }

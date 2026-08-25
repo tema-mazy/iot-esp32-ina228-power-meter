@@ -35,6 +35,13 @@ See **[hardware.md](hardware.md)** for the authoritative detail.
 
 Currents above **10.9 A** need the onboard shunt removed and an external one fitted - for example an FL-2 75 mV / 100 A (750 uOhm), good for ~218 A. Set `CONFIG_PM_RSHUNT_MICROOHM` and `ATS` adjusts its own limits to match. See [hardware.md S3.4](hardware.md).
 
+**Bench rigs only:** disconnect the battery *before* removing power from the
+monitor, and power the monitor *before* connecting the battery. Leaving the
+INA228's inputs at pack voltage with its supply dead is not a documented
+operating state, and a pack left that way overnight lost ~130 mAh
+([hardware.md S5.2](hardware.md)). The shipping design powers the monitor from
+the battery, so the two rails track and this cannot occur.
+
 Two things that fail silently if you skip them:
 - **Bridge `VBus` to `VIN+`** on the breakout - otherwise current reads correctly and voltage reads zero ([hardware.md S3.1.1](hardware.md))
 - **All load current must pass through `VIN+ -> VIN-`** - any second connection to battery positive is invisible to the gauge
