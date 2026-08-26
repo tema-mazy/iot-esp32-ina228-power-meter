@@ -64,25 +64,48 @@ def fmt_for(step):
     return "{:." + str(d) + "f}"
 
 
-def render(series, xlabel, ylabel, caption=""):
-    """series = [(label, [(x, y)...], slot, dashed)]"""
+def _range(pts_lists):
+    ys = [p[1] for s in pts_lists for p in s]
+    lo, hi = min(ys), max(ys)
+    pad = ((hi - lo) or 1) * 0.08
+    return lo - pad, hi + pad
+
+
+def render(series, xlabel, ylabel, caption="", ylabel2=None):
+    """series = [(label, [(x, y)...], slot, dashed)]
+
+    With ylabel2 set, series[1:] are drawn against an independent right-hand
+    scale. Two y-scales on one chart are normally the wrong answer - the
+    apparent relationship between the lines is fixed by the range choices
+    rather than by the data, so such a chart cannot be evidence for a claim
+    about how the series relate. Kept because it was asked for explicitly.
+    Prefer indexing both to a common base, or small multiples.
+    """
     xs = [p[0] for _, s, _, _ in series for p in s]
-    ys = [p[1] for _, s, _, _ in series for p in s]
     x0, x1 = min(xs), max(xs)
-    y0, y1 = min(ys), max(ys)
-    pad = ((y1 - y0) or 1) * 0.08
-    y0 -= pad
-    y1 += pad
-    pw, ph = W - PAD["l"] - PAD["r"], H - PAD["t"] - PAD["b"]
+
+    left = [s for i, (_, s, _, _) in enumerate(series) if not (ylabel2 and i)]
+    right = [s for i, (_, s, _, _) in enumerate(series) if ylabel2 and i]
+    y0, y1 = _range(left)
+    r0, r1 = _range(right) if right else (0.0, 1.0)
+
+    pad_r = PAD["r"] + (46 if ylabel2 else 0)
+    pw, ph = W - PAD["l"] - pad_r, H - PAD["t"] - PAD["b"]
 
     def px(x):
         return PAD["l"] + (0 if x1 == x0 else (x - x0) / (x1 - x0) * pw)
 
-    def py(y):
-        return PAD["t"] + ph - (y - y0) / (y1 - y0) * ph
+    def py(y, axis=0):
+        a, b = (r0, r1) if axis else (y0, y1)
+        return PAD["t"] + ph - (y - a) / (b - a) * ph
+
+    def axis_of(i):
+        return 1 if (ylabel2 and i) else 0
 
     yt, xt = ticks(y0, y1, 5), ticks(x0, x1, 6)
+    rt = ticks(r0, r1, 5) if right else []
     fy = fmt_for(yt[1] - yt[0]) if len(yt) > 1 else "{:.2f}"
+    fr = fmt_for(rt[1] - rt[0]) if len(rt) > 1 else "{:.2f}"
     fx = fmt_for(xt[1] - xt[0]) if len(xt) > 1 else "{:.1f}"
 
     css = (".bg{fill:%s}.t{fill:%s}.t2{fill:%s}.g{stroke:%s}"
@@ -124,20 +147,38 @@ def render(series, xlabel, ylabel, caption=""):
     o.append(f'<text class="t2" transform="translate(14,{PAD["t"] + ph / 2}) '
              f'rotate(-90)" text-anchor="middle">{ylabel}</text>')
 
-    for label, pts, slot, dashed in series:
-        d = " ".join(("M" if i == 0 else "L") + f"{px(x):.1f},{py(y):.1f}"
-                     for i, (x, y) in enumerate(pts))
+    # Right-hand scale. Tick labels wear the series colour, not ink, because
+    # nothing else says which line the numbers belong to.
+    if ylabel2:
+        rx = PAD["l"] + pw
+        o.append(f'<line class="a" x1="{rx}" y1="{PAD["t"]}" '
+                 f'x2="{rx}" y2="{PAD["t"] + ph}"/>')
+        for t in rt:
+            o.append(f'<text class="t2 s2f" x="{rx + 8}" '
+                     f'y="{py(t, 1) + 4:.1f}">{fr.format(t)}</text>')
+        o.append(f'<text class="t2 s2f" transform="translate({W - 12},'
+                 f'{PAD["t"] + ph / 2}) rotate(-90)" '
+                 f'text-anchor="middle">{ylabel2}</text>')
+
+    for i, (label, pts, slot, dashed) in enumerate(series):
+        ax = axis_of(i)
+        d = " ".join(("M" if j == 0 else "L") + f"{px(x):.1f},{py(y, ax):.1f}"
+                     for j, (x, y) in enumerate(pts))
         dash = ' stroke-dasharray="6 4"' if dashed else ""
         o.append(f'<path class="ln s{slot}" d="{d}"{dash}/>')
 
     # Direct labels, nudged apart so they never overprint.
-    lab = sorted(({"t": lb, "s": sl, "x": px(s[-1][0]), "y": py(s[-1][1])}
-                  for lb, s, sl, _ in series), key=lambda a: a["y"])
+    lab = sorted(({"t": lb, "s": sl, "x": px(s[-1][0]),
+                   "y": py(s[-1][1], axis_of(i))}
+                  for i, (lb, s, sl, _) in enumerate(series)),
+                 key=lambda a: a["y"])
     for i in range(1, len(lab)):
         if lab[i]["y"] - lab[i - 1]["y"] < 13:
             lab[i]["y"] = lab[i - 1]["y"] + 13
+    # Clear the right-hand tick numbers when there is a second scale.
+    dx = 44 if ylabel2 else 8
     for l in lab:
-        o.append(f'<text class="lb s{l["s"]}f" x="{l["x"] + 8:.1f}" '
+        o.append(f'<text class="lb s{l["s"]}f" x="{l["x"] + dx:.1f}" '
                  f'y="{l["y"] + 4:.1f}">{l["t"]}</text>')
     if caption:
         o.append(f'<text class="cap t2" x="{PAD["l"]}" y="14">{caption}</text>')
@@ -154,8 +195,19 @@ def main():
     ap.add_argument("--label", default="measured")
     ap.add_argument("--label2", default="")
     ap.add_argument("--scale", type=float, default=1.0)
+    ap.add_argument("--scale2", type=float, default=1.0,
+                    help="scale for --field2. Separate from --scale because a "
+                         "second series generally carries different units; "
+                         "sharing one factor silently multiplied watts by "
+                         "1000 the first time this was used.")
     ap.add_argument("--per-cell", type=int, default=0)
     ap.add_argument("--ylabel", default="")
+    ap.add_argument("--ylabel2", default="",
+                    help="label for an independent right-hand scale for "
+                         "--field2. Two y-scales let the range choices decide "
+                         "where the lines appear to cross, so such a chart "
+                         "cannot support a claim about how the series relate. "
+                         "Prefer indexing both to a common base.")
     ap.add_argument("--xlabel", default="hours")
     ap.add_argument("--caption", default="")
     ap.add_argument("--min-bus-v", type=float,
@@ -182,15 +234,17 @@ def main():
         sys.exit("need at least 2 samples")
     t0 = rows[0]["ts"]
 
-    def pts(field):
+    def pts(field, scale=None, per_cell=None):
+        scale = args.scale if scale is None else scale
+        per_cell = args.per_cell if per_cell is None else per_cell
         out = []
         for r in rows:
             v = r.get(field)
             if v is None:
                 continue
-            v *= args.scale
-            if args.per_cell:
-                v /= args.per_cell
+            v *= scale
+            if per_cell:
+                v /= per_cell
             out.append(((r["ts"] - t0) / 3600.0, v))
         if args.bucket_min:
             width = args.bucket_min / 60.0
@@ -203,10 +257,15 @@ def main():
 
     series = [(args.label, pts(args.field), 1, False)]
     if args.field2:
-        series.append((args.label2 or args.field2, pts(args.field2), 2, False))
+        # An independent right-hand scale means independent units, so the
+        # second series must not inherit the first's scaling.
+        s2 = (args.scale2, 0) if args.ylabel2 else (None, None)
+        series.append((args.label2 or args.field2,
+                       pts(args.field2, s2[0], s2[1]), 2, False))
 
     with open(args.out, "w") as f:
-        f.write(render(series, args.xlabel, args.ylabel, args.caption))
+        f.write(render(series, args.xlabel, args.ylabel, args.caption,
+                       args.ylabel2 or None))
     print(f"wrote {args.out}")
     return 0
 

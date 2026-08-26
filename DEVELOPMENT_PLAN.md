@@ -585,12 +585,11 @@ at 27.0 percent against a predicted 25, and 1 bar blinking at 3.7 percent.
 
 ### 5.9.3 The load draws constant power, so current rises as the pack sags
 
-![Load current rises](docs/load-current-rise.svg)
+![Current and power](docs/load-current-power.svg)
 
-![Load power stays flat](docs/load-power-flat.svg)
-
-Both charts are the same run and the same 20-minute means. Current climbs
-steadily; power does not. That is the signature of a **constant-power load** -
+Run 5, 20-minute means, current on the left scale and input power on the right.
+Current climbs steadily; power does not. That is the signature of a
+**constant-power load** -
 a buck converter holds its output, so `I_in = P_out / (V_in x eta)` and input
 current must rise as the pack falls. Over hours 3 to the end of run 5:
 
@@ -607,6 +606,13 @@ input voltage drops - at fixed output the input current is higher, so `I^2 R`
 conduction losses grow. It could equally be the Pi's own workload drifting;
 this data cannot separate the two, which would need measurement on both sides
 of the converter.
+
+> ! **Read the divergence from the table, not from the chart.** The two series
+> are on independent scales, so how close together the lines appear is decided
+> by the two range choices, not by the data - here auto-ranging happens to lay
+> them almost on top of each other, which reads as "current and power track
+> each other" and is the opposite of the point. The 18.6 versus 4.2 percent in
+> the table is the evidence; the chart only shows the shapes.
 
 > **Do not judge this per-sample.** Regressing `I` on `1/V` across the raw
 > samples gives `R^2 = 0.31`, which looks like the model failing. It is not:

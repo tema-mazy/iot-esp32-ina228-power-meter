@@ -28,17 +28,12 @@ python3 tools/svg_chart.py docs/ir-compensation.svg \
   --label measured --label2 "IR-corrected" --min-bus-v 1.0 \
   --caption "IR compensation with the firmware-learned R = 0.92 ohm"
 
-python3 tools/svg_chart.py docs/load-current-rise.svg \
+python3 tools/svg_chart.py docs/load-current-power.svg \
   discharge-run5-dropout.jsonl \
-  --field i --scale 1000 --ylabel "mA" --label current --min-bus-v 1.0 \
-  --bucket-min 20 \
-  --caption "Load current rises ~19 pct as the pack sags (20 min means)"
-
-python3 tools/svg_chart.py docs/load-power-flat.svg \
-  discharge-run5-dropout.jsonl \
-  --field p --ylabel "W" --label power --min-bus-v 1.0 \
-  --bucket-min 20 \
-  --caption "Same run and same means - input power stays flat"
+  --field i --scale 1000 --ylabel "mA" --label current \
+  --field2 p --scale2 1.0 --ylabel2 "W" --label2 power \
+  --min-bus-v 1.0 --bucket-min 20 \
+  --caption "Current and input power, 20 min means, independent scales"
 
 python3 tools/svg_chart.py docs/load-hdmi.svg discharge-run1.jsonl \
   --field i --scale 1000 --ylabel "mA" --label "with HDMI" \
