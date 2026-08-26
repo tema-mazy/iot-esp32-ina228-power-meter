@@ -13,6 +13,7 @@ static double          s_last_charge_c;  // previous CHARGE register value
 static bool            s_have_charge;
 static gauge_mode_t    s_mode;
 static float           s_anchor_held_s;
+static float           s_rest_held_s;   // seconds continuously at rest
 static float           s_since_save_s;
 static float           s_mah_at_save;
 static float           s_v_ocv;
@@ -203,6 +204,11 @@ void gauge_init(const battery_config_t *cfg, const ina228_reading_t *first) {
   s_loaded = true;
   s_have_charge = false;
   s_have_prev = false;
+  // A newly provisioned pack must earn its own settle time; inheriting the
+  // previous one's would let a reading be treated as rested the instant it
+  // appears.
+  s_rest_held_s = 0.0f;
+  s_anchor_held_s = 0.0f;
   s_r_n = 0;
 }
 
@@ -267,6 +273,11 @@ void gauge_update(const battery_config_t *cfg, const ina228_reading_t *r,
   else
     s_mode = GS_IDLE;
 
+  if (s_mode == GS_IDLE)
+    s_rest_held_s += dt_s;
+  else
+    s_rest_held_s = 0.0f;
+
   // ---- learn R_total from load steps ----
   // Every step in current gives R = -dV/dI for free. Measured on real packs
   // this varies 20x between batteries of the same nominal voltage (0.92 ohm
@@ -303,6 +314,29 @@ void gauge_update(const battery_config_t *cfg, const ina228_reading_t *r,
   // v_ocv = v_measured + I * R. Zero until R has been learned, in which case
   // this reports the measured voltage unmodified.
   s_v_ocv = r->bus_v + r->current_a * s_st.r_total;
+
+  // ---- learn the pack's own full voltage, with nobody in the loop ----
+  // In the field nobody sends ATR and nobody charges the pack in-rig, so
+  // neither of the explicit paths ever fires. Instead take the highest
+  // settled resting voltage this record has seen: a pack that is regularly
+  // charged will, sooner or later, sit at rest while full, and that reading
+  // is what full means for it. Converges upward over a few cycles.
+  //
+  // Only ever ratchets up, which is the safe direction - a too-low v_full
+  // under-reports rather than claiming charge that is not there. ATR assigns
+  // outright rather than taking a max, so a human can still correct it down.
+  if (s_rest_held_s >= GAUGE_VFULL_SETTLE_S) {
+    int fn;
+    const ocv_pt_t *ft = ocv_table(cfg->chem, &fn);
+    float pc = s_v_ocv / cfg->series;
+    if (pc > s_st.v_full_pc && pc < ft[0].v &&
+        ocv_raw(ft, fn, pc) >= GAUGE_ASSUME_FULL_MIN_SOC) {
+      ESP_LOGI(TAG, "learned full voltage %.3f V/cell after %.0f min at rest "
+                    "(was %.3f)", pc, s_rest_held_s / 60.0f, s_st.v_full_pc);
+      s_st.v_full_pc = pc;
+      save(cfg, s_v_ocv);
+    }
+  }
 
   // ---- full-charge anchor ----
   float taper = s_st.mah_full / 1000.0f / GAUGE_ANCHOR_C_DIV;
@@ -342,7 +376,15 @@ void gauge_update(const battery_config_t *cfg, const ina228_reading_t *r,
   }
 
   // ---- empty clamp ----
-  if (r->bus_v <= cfg->vmin && s_st.mah_remaining > 0) {
+  // The floor matters as much as the ceiling: a *disconnected* pack reads
+  // near 0 V, which is trivially "at or below Vmin", and without this guard
+  // unplugging the battery silently clamps the stored count to zero and
+  // persists it. Measured: a bench pack pulled at 3.7 % came back reading
+  // 0.077 V and the record was rewritten to 0 mAh / mah_used = full.
+  // No functioning pack of any chemistry sits at 0.5 V/cell.
+  float present_floor = 0.5f * cfg->series;
+  if (r->bus_v > present_floor && r->bus_v <= cfg->vmin &&
+      s_st.mah_remaining > 0) {
     ESP_LOGW(TAG, "at Vmin with %.0f mAh still counted - clamping to 0",
              s_st.mah_remaining);
     s_st.mah_remaining = 0;

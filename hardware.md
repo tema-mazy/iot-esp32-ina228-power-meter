@@ -475,13 +475,19 @@ Power down:  battery OFF         ->  monitor supply OFF
 
 If you must run split-powered for firmware work, the practical rule is: **unplug the battery before the notebook sleeps.**
 
-#### 5.2.1 Side effect: pulling the pack while the monitor runs zeroes the gauge
+#### 5.2.1 Side effect: pulling the pack while the monitor runs zeroed the gauge
 
-Observed at the end of run 5. With the ESP32 still USB-powered, disconnecting the pack made the INA228 read the bus at **0.039 V, then 0.011 V** with `err:0` - correct measurements of an absent battery. The gauge treated that as a valid rest voltage, seeded from OCV, and latched `soc:0.0`, `mah_left:0`, `mah_used:2000`.
+Observed at the end of run 5, and again after it. With the ESP32 still USB-powered, disconnecting the pack made the INA228 read the bus at **0.077 V** with `err:0` - a correct measurement of an absent battery. The stored record was then rewritten to `soc:0.0`, `mah_left:0`, `mah_used:2000`.
 
-**It self-corrects**, and by design: on reconnect a charged pack reads ~21 V, far outside `GAUGE_SAME_PACK_MV_PER_CELL` of the stored `last_v` of ~0 V, so the gauge rejects the stored count and re-seeds from OCV. No action needed.
+**The cause was the empty clamp, not OCV seeding.** Both seeding paths were already guarded (`gauge_init` defers below 0.5 V, and the deferred seed waits for `bus_v > 0.5`). The unguarded test was the clamp:
 
-But two things follow. First, **the last few samples of any log that ends with a pack disconnect are not battery data** and must be excluded from analysis - `tools/svg_chart.py --min-bus-v 1.0` does this, and without it the zero readings pin the y-axis and flatten the entire curve. Second, a plausible firmware hardening is to refuse OCV seeding below roughly 0.5 V/cell and log the disconnect instead; the present behaviour is harmless only because the same-pack check happens to catch it afterwards.
+```c
+if (r->bus_v <= cfg->vmin && s_st.mah_remaining > 0)   // 0.077 <= 15.0
+```
+
+A disconnected pack is trivially "at or below Vmin", so the clamp fired on an absent battery and persisted the result. **Fixed** by requiring the pack to be present at all - `bus_v > 0.5 V/cell x series` - since no functioning pack of any chemistry sits that low. In the shipping topology the case cannot arise anyway, because the monitor is powered from the pack it measures (S11) and dies with it; it is specific to the split-powered bench rig.
+
+One analysis consequence remains regardless: **the last few samples of any log that ends with a pack disconnect are not battery data** and must be excluded. `tools/svg_chart.py --min-bus-v 1.0` does this; without it the zero readings pin the y-axis and flatten the whole curve.
 
 ### 5.3 Bench development without a battery
 

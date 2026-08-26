@@ -42,6 +42,19 @@
 // them. Expressed in table percent so it holds for every chemistry.
 #define GAUGE_ASSUME_FULL_MIN_SOC 80.0f
 
+// How long the pack must sit at rest before a reading counts as settled
+// enough to learn the full voltage from. Nobody in the field sends ATR, so
+// v_full has to arrive on its own or a freshly charged tool pack reads ~92 %
+// forever.
+//
+// The number this defends against is surface charge: straight off the charger
+// a Li-ion cell reads 4.15-4.18 V and decays toward its true ~4.10 over tens
+// of minutes. Learning from that would set v_full high and make SoC read low
+// for the pack's whole life - the same bug in the other direction. 20 minutes
+// covers most of the decay while still being a rest a garage pack actually
+// gets between jobs.
+#define GAUGE_VFULL_SETTLE_S 1200.0f
+
 typedef enum {
   GS_UNKNOWN = 0,
   GS_CHARGING,
