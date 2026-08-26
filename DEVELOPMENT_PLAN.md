@@ -154,13 +154,18 @@ than a bug: `CURRENT_LSB` falls 4x while the ADCRANGE=1 multiplier is 4x.
 Single-line JSON, per handoff S6:
 
 ```json
-{"v":19.84,"i":1.42,"p":28.2,"t":31.4,"soc":73,"mah_left":2620,"mah_used":1180,"wh":22.4,"state":"discharging","est":false,"err":0}
+{"v":19.8400,"i":1.42000,"p":28.2000,"t":31.4,"soc":73.0,"mah_left":2620,"mah_used":1180,"wh":22.40,"v_ocv":20.1200,"r":0.935,"v_full":4.121,"state":"discharging","est":false,"q_c":5527.129,"e_j":100102.30,"err":0}
 ```
 
 - `i` sign convention: **positive = discharge** (current leaving the pack).
-- `state` ? `charging | discharging | idle | full | unknown`.
+- `state` -> `charging | discharging | idle | full | unknown`.
 - `est:true` means SoC came from OCV in the curve's flattest stretch (3.60-3.90 V/cell) and is worth +/-10 %, rather than from a coulomb count or a near-full reading.
+- `v_ocv` is pack-level and IR-compensated (`v + i * r`); `r` is the learned `R_total` in ohms. Both are 0 until R has been learned, in which case `v_ocv` equals `v`.
+- `v_full` is the **learned resting-full volts per cell** for this pack, `0.000` until the pack has been declared full at least once. See S4.4.1 - it is what rescales the OCV curve, and on a fleet of tool packs it is the field that tells you what each pack's charger actually does.
+- `q_c` and `e_j` come straight from the INA228's hardware accumulators, so they are unaffected by how often the host polls.
 - `err` is a bitmask of latched faults, mirroring what `ATL` explains in words.
+
+The SoC fields (`soc`, `mah_left`, `mah_used`, `wh`, `v_ocv`, `r`, `v_full`, `state`, `est`) are **omitted entirely** when no pack is provisioned, rather than emitted as nulls - an unprovisioned device is still a working voltmeter and ammeter, and a host must not be able to bind to numbers that do not mean anything.
 
 ### 2.4 `ATL` output
 
@@ -415,6 +420,36 @@ On cold boot, rest 60 s (no load, or subtract IR sag), read pack voltage, divide
 | 1.95 | 0 % | 11.70 |
 
 Both lead-acid tables need a **long rest to settle - hours, not the 60 s used for lithium.** Surface charge alone can read 0.1 V/cell high. Flag `est:true` if the rest was under 30 minutes, which in practice means most boots. Note also that `0 %` here is the fully-discharged point; for cycle life a lead-acid pack should be stopped near 50 %, which is what `Vmin` in `ATS` is for.
+
+### 4.4.1 ! The table's 100 % is not every pack's 100 %
+
+The Li-ion table tops at **4.20 V/cell**, the cell's design charge ceiling. Plenty of packs never go there. **Tool packs commonly terminate near 4.10 V/cell**, trading roughly 8 percent of capacity for a large gain in cycle life, and the measured 5S bench pack settles at **4.085-4.121 V/cell** with its charger showing a steady green and refusing to restart.
+
+Against the raw table that reads **92 percent at full**, and the gauge would under-report by that margin for the pack's entire life. For a product aimed at tool packs that is the common case, not an edge case.
+
+So the gauge **learns each pack's own full voltage** rather than assuming the table's:
+
+- `gauge_persist_t.v_full_pc` holds the learned resting-full volts per cell, per `pack_id`, `0` meaning not yet observed.
+- It is recorded whenever the pack is **declared full** - by `ATR`, by the button long press, or by the charge-termination anchor firing. All three take the IR-compensated reading at that moment.
+- `gauge_soc_from_ocv` then **scales the whole curve** by `100 / raw_soc(v_full)`.
+
+**Scaling rather than shifting is the physically correct choice.** Charging to 4.10 instead of 4.20 removes the top slice of charge; the mAh held below 4.10 is unchanged. Absolute charge at any lower voltage stays put while the denominator shrinks, so every point rises by the same factor. With `v_full = 4.121`:
+
+| V/cell | raw | scaled |
+|---|---|---|
+| 4.121 | 92.1 % | **100.0 %** |
+| 4.00 | 80.0 % | 86.9 % |
+| 3.72 | 50.0 % | 54.3 % |
+| 3.40 | 10.0 % | 10.9 % |
+| 3.00 | 0 % | 0 % |
+
+Guards, all verified against the reference implementation: the result is monotonic, clamps at 100, still returns exactly 0 at the empty point, and `v_full_pc = 0` reproduces the raw table exactly so nothing changes for a pack that does reach 4.20. A declared full voltage that lands below `GAUGE_ASSUME_FULL_MIN_SOC` (80 percent of table) is **ignored rather than learned** - otherwise one bad `ATR` on a flat pack would inflate every later reading.
+
+> **Why not reuse `Vmax` from `ATS`?** Because `Vmax` is the *charge ceiling*, not the resting-full voltage, and `config.h` says so explicitly. For lead-acid the two differ by ~1.8 V - a charger drives 2.40 V/cell into a pack that rests at 2.14. Deriving "full" from `Vmax` would work for lithium and be badly wrong for the two lead-acid chemistries. Learning it costs one float and is right for all four.
+
+**Assume-full is judged on table percent, not on a fixed voltage.** The original test was `t[0].v - (t[0].v - t[1].v) * 0.8`, i.e. 4.12 V/cell for Li-ion, which **refuses exactly the tool packs this is meant to serve**. The bench pack cleared it by 1 mV. It is now `raw_soc >= 80 %`, which carries the same intent - reject "assume full" on a visibly half-empty pack - without hardcoding one chemistry's ceiling.
+
+> ! **Re-provisioning discards learned state.** `ATS` re-runs `gauge_init` from a zeroed struct, so `v_full_pc` and the learned capacity are lost even when the config is byte-identical. `tools/test_at.py` re-provisions many times; running it against a live pack wipes that pack's calibration. Re-issue `ATR` after a full charge to restore it.
 
 Then, for any chemistry:
 - **Voltage unchanged versus stored `last_v`** (within ~50 mV/cell) -> same pack, undisturbed. **Restore the stored coulomb count** - it beats OCV.

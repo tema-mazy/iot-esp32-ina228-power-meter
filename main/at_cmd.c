@@ -101,11 +101,11 @@ static void cmd_ata(void) {
   if (at_get_config(NULL) && gauge_get(&g)) {
     link_printf("{\"v\":%.4f,\"i\":%.5f,\"p\":%.4f,\"t\":%.1f,"
                 "\"soc\":%.1f,\"mah_left\":%.0f,\"mah_used\":%.0f,"
-                "\"wh\":%.2f,\"v_ocv\":%.4f,\"r\":%.3f,"
+                "\"wh\":%.2f,\"v_ocv\":%.4f,\"r\":%.3f,\"v_full\":%.3f,"
                 "\"state\":\"%s\",\"est\":%s,"
                 "\"q_c\":%.3f,\"e_j\":%.2f,\"err\":%u}\r\n",
                 r.bus_v, r.current_a, r.power_w, r.temp_c, g.soc, g.mah_left,
-                g.mah_used, g.wh_left, g.v_ocv, g.r_total,
+                g.mah_used, g.wh_left, g.v_ocv, g.r_total, g.v_full_pc,
                 gauge_mode_name(g.mode), g.est ? "true" : "false",
                 r.charge_c, r.energy_j, err);
   } else {

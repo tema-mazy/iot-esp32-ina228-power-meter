@@ -19,5 +19,6 @@ __pycache__/
 # claim in DEVELOPMENT_PLAN.md S5.9 is unverifiable. ~310 KB total.
 !discharge-run*.jsonl
 discharge.err
+dashboard.err
 *.html
 calibration.json

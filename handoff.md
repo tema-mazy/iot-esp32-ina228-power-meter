@@ -1,180 +1,134 @@
-# Session Handoff - 2026-08-18 - Firmware phases 2, 3, 6, 7; test suite; ASCII cleanup
-
-Supersedes the 2026-08-13 handoff (design + phases 0/1), which is in git
-history at commit a86c177.
+# Session Handoff - 2026-08-25 - Full discharge run 5 to converter dropout, docs updated
 
 ## What was done
 
-Commit `a86c177` (pushed to origin/main, 29 files, 3555 insertions):
-
-- Transport layer: `main/link.h` plus `link_usb.c`, `link_uart.c`,
-  `link_common.c`. Writes use a finite timeout and discard on expiry so a host
-  that is not draining the FIFO cannot stall the gauge.
-- `main/logbuf.c`: capture-only log ring buffer. Console is disabled entirely
-  (`CONFIG_ESP_CONSOLE_NONE`); logs exit only via ATL.
-- `main/at_cmd.c`: AT / ATI / ATA / ATL / ATZ / ATFW, numbered error codes.
-- `main/ota.c`: ATFW receiver, streaming MD5, rollback gated on a health check
-  (INA228 probe plus one served command), not merely on booting.
-- `main/led.c`: blink-count vocabulary.
-- `tools/test_at.py`: 39 tests. Found four real defects on first run.
-- All files converted to pure ASCII (see below).
-
-Phase 7 host reader, tested on hardware:
-
-- `tools/monitor.py` - modes: table, `--json`, `--status-file` (atomic replace
-  via `os.replace`), `--http PORT`. Importable as `Monitor`. Reconnects on its
-  own; verified by sending ATZ mid-poll (one ERROR 5 during the reboot window,
-  then it resumed unattended).
-- `tools/battery-monitor.service` - systemd example.
+- Monitored a 9.58 h discharge of the 5S1P 18650 Li-ion pack (`bp18650`) to the
+  point the load died. 578 samples, 80.4 to 3.7 percent, 1532.6 mAh delivered.
+  Archived as `discharge-run5-dropout.jsonl` (was `discharge.jsonl` during the run).
+- Diagnosed the run termination: the Pi's DC-DC fell out of regulation at
+  **15.456 V (3.091 V/cell) under 193 mA**. Not the BMS, not the cells. Evidence:
+  current dropped 193 mA to 2.2 mA in one 60 s interval, then pack voltage
+  *rebounded* +47 mV/cell over 13 min. A pack that recovers is not empty.
+- Ran `tools/calibrate.py discharge.jsonl` (dry run). It **refused**, correctly:
+  run started at 80.4 percent and ended at 3.138 V/cell, above its 3.05 threshold.
+  No `capacity_factor` was written. `calibration.json` is untouched.
+- Stopped everything on request: cron job `a308aa1e` (5-min status reports)
+  cancelled via CronDelete; `monitor.py` and `plot_discharge.py` killed.
+- Docs updated and committed as `7c8e497`, pushed to `origin/main`:
+  - `DEVELOPMENT_PLAN.md` S5.9.1 - run 5, slope table across the knee, R rising
+    0.92 to 1.02 ohm with depth of discharge.
+  - `DEVELOPMENT_PLAN.md` S5.9.2 - why the run does NOT measure capacity.
+  - `hardware.md` S7.3.1 - the converter sets the floor, not the chemistry.
+  - `hardware.md` S5.2.1 - gauge zeroing when the pack is pulled while powered.
+  - New charts `docs/discharge-knee.svg`, `docs/discharge-soc.svg`.
+- Fixed three pre-existing defects found while doing the above (details below).
 
 ## What was successful
 
-- **The test suite paid for itself immediately.** Four real bugs on the first
-  run, two of which manual spot-checks had "passed" for the wrong reason. Run
-  it after every protocol change:
-  `./tools/test_at.py /dev/cu.usbmodem1101 --ota build/power_meter.bin`
-- **Reading the TI datasheet rather than trusting memory.** `WebFetch` on
-  https://www.ti.com/lit/ds/symlink/ina228.pdf returns unparsed binary but
-  saves the PDF locally; `Read` with `pages: "22-31"` renders it. Caught that
-  SHUNT_CAL is a 15-bit field, not 16.
-- **Building OTA early (phase 6 before 4 and 5).** Every later phase now
-  flashes over the AT link instead of the cable.
-- **Making ATA omit SoC fields rather than emit nulls.** Nothing can bind to
-  values that do not mean anything yet.
-- **Reporting unimplemented commands as "not implemented in this phase"**
-  rather than "unknown command", so a host can tell wrong-firmware from typo.
-- Capturing serial non-interactively with the IDF python env:
-  `. $IDF_PATH/export.sh && python -c "import serial; ..."`. `idf.py monitor`
-  is interactive; system python3 lacks pyserial.
+- **Rasterizing SVGs and actually looking at them.** `rsvg-convert -w 1200 -b white
+  docs/X.svg -o scratch/X.png` then Read the PNG. This is what caught the flattened
+  y-axis; no amount of reading the SVG source would have. `/opt/local/bin/rsvg-convert`
+  is installed via macports. Note `qlmanage -t` silently produced nothing - do not
+  use it. Also note rsvg-convert does NOT create the output directory; `mkdir -p` first.
+- **Three independent corroborations of the gauge** from the pack's own 4-LED
+  indicator: 2 bars at 34.3 percent (band 25-50), the 2-to-1 transition at 27.0
+  percent against a predicted 25, 1 bar blinking at 3.7 percent. This is the only
+  external reference available for SoC and it is worth continuing to record.
+- **Trusting `calibrate.py`'s refusal rather than overriding it.** Its two guards
+  (must start full, must end below 3.05 V/cell) both fired for good reason.
+- Keeping the raw log intact and filtering at plot time (`--min-bus-v`) rather than
+  deleting rows from the jsonl.
 
 ## What went wrong - do NOT repeat
 
-### The USB Serial/JTAG flow-control trap
-
-**The driver silently discards data when its RX ring overflows.** No error, no
-backpressure. Host writes at ~1 MB/s, device drains at flash-write speed
-(~150 kB/s), so a free-running 278 KB OTA stream lost ~146 KB and then timed
-out waiting for bytes that no longer existed.
-
-Fixed with a per-chunk ACK, but the constraint cost an extra debug cycle:
-**OTA_CHUNK must be smaller than rx_buffer_size** (now 2048 vs 4096). The ACK
-paces the host BETWEEN chunks, not within one, so an oversized chunk overflows
-the ring mid-chunk. Signature: a timeout reporting **exactly rx_buffer_size
-bytes received**. Documented at `main/ota.h:20` and `main/link_usb.c:13`.
-
-### Other bugs the suite caught
-
-1. **ERROR sent after OK on oversize ATFW.** The host follows the spec, sees
-   OK, starts streaming, and the device is not listening. Validation now
-   precedes the ack (`ota_check_size`, called from `main/at_cmd.c:cmd_atfw`).
-2. **The command line's LF became the first firmware byte.** The parser
-   dispatched on CR, leaving LF queued; `ota_receive` read 0x0A as byte one and
-   every image was shifted. `esp_ota_write` rejected the header with
-   ESP_ERR_OTA_VALIDATE_FAILED, which reads like a corrupt image rather than a
-   parser bug. Fix: dispatch on LF, discard CR (`main/at_cmd.c:at_task`).
-3. **No RX flush after a failed transfer.** Leftover payload was parsed as AT
-   commands; symptom was a bogus "ERROR 1 line too long" for a 46-char command.
-   Fix: `link_flush_rx()`.
-
-### Process mistakes
-
-- **A manual test passed for the wrong reason.** "Corrupted image rejected" was
-  caught by `esp_ota_end` because bug 2 had shifted the header, not by the MD5
-  check being tested. Manual spot-checks gave false confidence; the scripted
-  suite did not. Prefer a test that asserts WHICH layer rejected something.
-- **Two `python3 - <<EOF` heredoc edits silently failed.** One had no assertion
-  after `str.replace`; another contained a `b'''` bytes literal with non-ASCII
-  and raised SyntaxError while the surrounding `&&` chain still printed "ok".
-  **Always assert after replace and verify with grep, not the exit code.**
-- **Non-ASCII crept into every doc and source file.** The user had already
-  stated ASCII-only via the handoff skill; I applied it only to handoff.md and
-  left emoji, em dashes, arrows, section signs and box drawing everywhere else.
-  Now enforced globally in `~/.claude/CLAUDE.md` and in memory as
-  `ascii-only-output`. Check with `grep -rlP '[^\x00-\x7F]'` before finishing.
-  Note U+2212 (minus) is not a hyphen and became `?` in pin names such as
-  `VIN-` during transliteration; those were repaired by hand.
-- **Inferred a resistor value from Ohm's law without asking what the load was.**
-  Computed "5.2764 V / 1.30 mA implies ~4.06 kOhm, so a 3.9k or 4.3k part".
-  The load was actually a **device with its own battery being charged from a
-  USB port**, so 1.3 mA was charge-termination trickle current, not a resistive
-  load. Ask what is connected before deriving component values from it.
+- **`docs/regen.sh` had been silently broken.** It referenced
+  `discharge-run4-capacity.jsonl`, a file renamed to `discharge.jsonl` mid-run and
+  never present under that name, so the very first `svg_chart.py` call raised
+  FileNotFoundError. Worse, `sh docs/regen.sh` reported `exit=0` because the
+  `echo "exit=$?"` measured the exit of the pipeline's `tail`, not the script.
+  Lesson: when checking a script's exit status, do not pipe it. Fixed in `7c8e497`.
+- **Charts were committed but their source data was gitignored** (`*.jsonl`), so
+  `regen.sh` was never runnable from a clone and every measured claim in S5.9 was
+  unverifiable. Added `!discharge-run*.jsonl` to `.gitignore` and tracked the five
+  archived runs (~310 KB). The live `discharge.jsonl` stays ignored.
+- **First `discharge-knee.svg` was unreadable** - a flat line with a vertical spike
+  to zero. Cause: the last two rows of the log were taken after the pack was
+  physically disconnected (bus 0.039 V then 0.011 V, `err:0`), which dragged the
+  auto-ranged y-axis down to 0 and compressed the real 3.1-4.0 V range into nothing.
+  Fixed with `svg_chart.py --min-bus-v`. Do not assume a log ends with valid data.
+- **First attempt at the filter was wrong in a way that violated the dataviz rules.**
+  I made it filter on `--field`, then wired the SoC chart as `--field v --field2 soc`
+  to reuse it - producing a dual-axis chart mixing V/cell and percent on one scale.
+  Rewrote the option to key off bus voltage regardless of what is plotted. Never
+  reach for a second scale to make a filter work.
+- **Do not quote 1998 mAh as a capacity measurement.** 1532.6 mAh over 76.7 percent
+  of SoC implies it, and it matches the 2000 mAh label almost exactly, which makes
+  it very tempting. It is circular: `soc` is the coulomb count divided by the
+  2000 mAh handed to `ATS`, so the arithmetic can only ever return the label.
+- Earlier in the session (pre-compaction) two wrong guesses about the overnight
+  130 mAh drain (Pi standby, then INA228 ESD with VS dead) were both refuted by the
+  user - the Pi and the ESP were both physically disconnected. Still unattributed.
+  Do not guess a third time; run the differential test in Next steps.
 
 ## Current state
 
-Branch `main`, tracking `origin/main`. Commit `a86c177` pushed. `tools/`
-additions from phase 7 committed on top (see git log).
-
-Phases 0, 1, 2, 3, 6, 7 done and running on hardware. Phases 4 and 5 not
-started.
-
-Hardware on the bench: ESP32-C3 SuperMini plus INA228, powered from USB only,
-no buck and no battery fitted. `/dev/cu.usbmodem1101`.
-
-Bench observations, consistent and repeatable across three connect/disconnect
-cycles and a reboot:
-
-- 5 V source present: V=5.2771, I=1.28 mA, P matches V*I, dQ/dt matches I.
-  The "load" was a USB-charged device with its own battery, so 1.28 mA was
-  charge-termination current, not a resistor.
-- Source removed: exponential decay, tau ~9 s, settling to exactly 0.0000 V
-  (14 of 30 samples read 0.0000, trend -0.08 mV over 30 s). Not backflow - a
-  current source would hold a floor and never reach zero. The load device
-  evidently has reverse blocking in its charge path.
-- **Current channel keeps a fixed -0.13 mA offset with the input open.** That
-  is ~2 uV referred to the shunt, ordinary INA228 input offset, but a fuel
-  gauge integrates it: -3.1 mAh/day, about -0.8 %/month on a 12 Ah pack.
-  Voltage settles to true zero; current does not. Different zero behaviour
-  because VBUS is single-ended and current is differential across the shunt.
+- Branch `main`, clean, in sync with `origin/main` at `7c8e497`.
+- **Battery is at empty and should be on charge.** Last reading 15.69 V resting
+  (3.138 V/cell). Li-ion should not sit here.
+- Pack was physically disconnected from the INA228 at the end of the run. The
+  gauge latched `soc:0.0`, `mah_left:0`, `mah_used:2000` from the 0 V reading.
+  This self-corrects on reconnect (a charged pack at ~21 V is far outside
+  `GAUGE_SAME_PACK_MV_PER_CELL` of the stored `last_v`, so it re-seeds from OCV).
+  No action needed, but expect the first post-reconnect `ATA` to look odd briefly.
+- No logger, no dashboard, no cron running.
+- `calibration.json` still has no `capacity_factor` - the prediction loop the user
+  asked for ("adjust prediction next run") is still open, pending a qualifying run.
 
 ## Next steps
 
-1. Mark phase 7 done in README.md and DEVELOPMENT_PLAN.md S8 (the phase table
-   in README still lists it as not started).
-2. Add to the phase 5 plan, both discovered on the bench this session:
-   - **Zero-current offset calibration.** Capture current with the load known
-     off and subtract thereafter. There is no INA228 offset register, so it is
-     a software correction persisted to NVS. Trigger explicitly at provisioning
-     time, or automatically after a long idle stretch at flat voltage.
-   - **Load-capacitance backflow on disconnect.** The load's bulk caps drain
-     backwards through `VIN- -> shunt -> VIN+` and register as charging. Small,
-     but one-directional, and this workflow disconnects the pack regularly.
-3. Phase 4: `ATS` / `ATS?`, validation, NVS persistence, recompute SHUNT_CAL
-   from the real Imax. A realistic Imax also improves the +/-4 % current noise
-   seen at mA loads; below 2.7 A it selects ADCRANGE=1 for 4x resolution.
-4. Phase 5: gauge. Chemistry-selected OCV tables, coulomb counting, anchors,
-   IR compensation.
-5. Finish the phase 1 checkpoint: V and I against a DMM within 1 %, and confirm
-   the current sign with a real load (positive = discharge).
-6. Still untested: the S1.2 blocking-write trap. Leave the host disconnected
-   for 10 minutes and confirm the gauge keeps running.
-
-Build and flash:
-
-```
-. $IDF_PATH/export.sh                              # IDF 5.5.1 at ~/esp/5.5.1
-idf.py build
-idf.py -p /dev/cu.usbmodem1101 flash               # first time
-./tools/fwupdate.py /dev/cu.usbmodem1101 build/power_meter.bin   # thereafter
-./tools/test_at.py  /dev/cu.usbmodem1101 --ota build/power_meter.bin
-./tools/monitor.py  '/dev/cu.usbmodem*'            # live readings
-```
+1. **Charge the pack fully.** Confirm ~21 V at the terminals before the next run.
+2. **Decide what the next run should measure** (see Open questions). This changes
+   the rig, so decide before starting.
+3. Start a fresh single-file log for the whole cycle. Do NOT rename or rotate the
+   file mid-run - a previous session fragmented a capacity run that way and the
+   user's explicit ask was "i though i will get full stat from full charge to 0":
+   ```
+   python3 tools/monitor.py '/dev/cu.usbmodem*' -i 60 --json > discharge.jsonl
+   ```
+4. When it reaches cutoff:
+   ```
+   python3 tools/calibrate.py discharge.jsonl --commit
+   ```
+   It will refuse unless the run started full and ended below 3.05 V/cell.
+5. Archive as `discharge-run6-*.jsonl`, add it to `docs/regen.sh`, rerun
+   `sh docs/regen.sh`, and rasterize the output to check it before committing.
+6. **Differential test for the unattributed overnight drain**, still owed: Pi off,
+   DC-DC connected to the battery, monitor powered, log 30 min. ~0.5 mA acquits the
+   converter; ~13 mA convicts it.
+7. Still owed from Phase 1: verify V and I against a DMM within 1 percent.
+8. Still owed: S1.2 blocking-write trap - leave the host disconnected 10 minutes
+   and confirm the firmware does not stall.
 
 ## Open questions / risks
 
-- **Pack chemistry is still inference, not measurement.** BL18120, 18 V, 12 Ah,
-  21700 is read as 5S3P Li-ion NMC because LiFePO4 cannot make 18 V nominal
-  with an integer cell count. Charge it fully and measure: ~21 V confirms;
-  ~18.2 V would mean LiFePO4 and every threshold in `hardware.md` S7 is wrong.
-- **Multiple rotating packs?** A Makita-format battery implies an ecosystem. If
-  several will be used, `ATS` needs a `pack_id` field NOW - adding it later is
-  a breaking protocol change.
-- **Buck converter still unresolved.** Read the printed input range on the
-  DD4012SA and STL6118A; if either clears ~30 V it can be the ESP32 supply.
-  mini360 (23 V abs max), mini560 (20 V max) and XL6009E1 (boost, wrong
-  topology) are all ruled out for a 21 V pack.
-- **OCV tables are typical values, not measured.** All four chemistries in
-  `DEVELOPMENT_PLAN.md` S4 need trimming against the real pack in phase 5.
-- **VBus-to-VIN+ solder link** must be confirmed present on the breakout. A
-  floating VBus gives correct current and zero volts - a silent failure. It
-  also looks like the decaying reading seen on the bench this session, so do
-  not confuse the two.
+- **What should the next discharge measure?** Two different questions, two rigs:
+  - Through the Pi again: measures usable system runtime, bounded by converter
+    dropout at ~15.46 V. Cell capacity stays unmeasured.
+  - Through a bench load to BMS cutoff: measures actual pack health.
+  Only the second can ever satisfy `calibrate.py`.
+- **Should `ATS` `Vmin` change from 15.0 to 15.5 V?** Proposed in `hardware.md`
+  S7.3.1 but NOT applied. At 15.0 the gauge reports charge no load can reach and
+  time-to-empty overruns by the whole tail. Counter-argument: 15.5 is specific to
+  this pack-plus-converter pair, and re-provisioning changes the stored NVS record.
+  Needs the user's call. Command would be:
+  `ATS=LiIon,5S1P,2000,15.5,21.0,2.5,bp18650`
+- **Firmware hardening not implemented:** the gauge will seed SoC from a ~0 V
+  reading when the pack is absent. Suggested guard is to refuse OCV seeding below
+  ~0.5 V/cell and log the disconnect instead (`main/gauge.c:seed_from_ocv`). Present
+  behaviour is harmless only because the same-pack check catches it afterwards.
+- The overnight ~13 mA drain remains unexplained after ruling out the Pi, the ESP,
+  pack self-discharge, and the DC-DC (measured 0.37 mA idle, 25x too small).
+- User feedback worth keeping permanently (belongs in memory, not just here): the
+  ASCII-only rule for all written files, and "verify before recommending" - do the
+  arithmetic and read the datasheet before advising. Both are already in
+  `~/.claude/projects/.../memory/`.

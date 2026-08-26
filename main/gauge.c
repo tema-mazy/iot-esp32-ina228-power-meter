@@ -67,13 +67,8 @@ static const ocv_pt_t *ocv_table(chem_t c, int *n) {
   }
 }
 
-float gauge_soc_from_ocv(chem_t chem, float v, bool *est_out) {
-  int n;
-  const ocv_pt_t *t = ocv_table(chem, &n);
-
-  if (est_out)
-    *est_out = (v >= FLAT_LO[chem] && v <= FLAT_HI[chem]);
-
+// Straight table lookup, before any full-voltage rescaling.
+static float ocv_raw(const ocv_pt_t *t, int n, float v) {
   if (v >= t[0].v)      return 100.0f;
   if (v <= t[n - 1].v)  return 0.0f;
 
@@ -85,6 +80,33 @@ float gauge_soc_from_ocv(chem_t chem, float v, bool *est_out) {
     }
   }
   return 0.0f;
+}
+
+float gauge_soc_from_ocv(chem_t chem, float v, float v_full_pc, bool *est_out) {
+  int n;
+  const ocv_pt_t *t = ocv_table(chem, &n);
+
+  if (est_out)
+    *est_out = (v >= FLAT_LO[chem] && v <= FLAT_HI[chem]);
+
+  float soc = ocv_raw(t, n, v);
+
+  // Rescale so the pack's own full voltage reads 100 %. The charge held below
+  // v_full is unchanged in mAh; only the denominator shrinks, so every point
+  // scales by the same factor. A pack topping out at 4.12 V/cell reads 92 % on
+  // the raw table and would under-report by that much for its whole life -
+  // which is the common case for tool packs, not an edge case.
+  if (v_full_pc > 0.0f && v_full_pc < t[0].v) {
+    float full = ocv_raw(t, n, v_full_pc);
+    // Below this the declared "full" voltage is not credible - a bad ATR on a
+    // flat pack, say - and scaling by it would inflate every later reading.
+    if (full >= GAUGE_ASSUME_FULL_MIN_SOC) {
+      soc = soc / full * 100.0f;
+      if (soc > 100.0f)
+        soc = 100.0f;
+    }
+  }
+  return soc;
 }
 
 const char *gauge_mode_name(gauge_mode_t m) {
@@ -106,14 +128,17 @@ static void seed_from_ocv(const battery_config_t *cfg, float v_pack,
                           const char *why) {
   bool est = false;
   float per_cell = v_pack / cfg->series;
-  float soc = gauge_soc_from_ocv(cfg->chem, per_cell, &est);
+  float soc = gauge_soc_from_ocv(cfg->chem, per_cell, s_st.v_full_pc, &est);
 
-  // Above the table's 100 % point the reading is not a rested voltage at all:
-  // a charger is attached, or surface charge has not decayed. Seeding from it
-  // would report full on a half-empty battery.
+  // Above the pack's own full point the reading is not a rested voltage at
+  // all: a charger is attached, or surface charge has not decayed. Seeding
+  // from it would report full on a half-empty battery. Measured against the
+  // learned full voltage where one exists, so a tool pack that settles at
+  // 4.12 V/cell is not judged against a 4.20 V ceiling it never reaches.
   int n;
   const ocv_pt_t *t = ocv_table(cfg->chem, &n);
-  if (per_cell > t[0].v * 1.02f) {
+  float ceiling = s_st.v_full_pc > 0.0f ? s_st.v_full_pc : t[0].v;
+  if (per_cell > ceiling * 1.02f) {
     ESP_LOGW(TAG, "%.3f V/cell is above the table top - not a rested voltage, "
                   "holding SoC and flagging est", per_cell);
     est = true;
@@ -291,6 +316,20 @@ void gauge_update(const battery_config_t *cfg, const ina228_reading_t *r,
         ESP_LOGW(TAG, "anchor: count was %.0f mAh, full is %.0f - relearning",
                  before, s_st.mah_full);
       }
+      // Charge has terminated with the pack at rest, so this voltage is the
+      // pack's own definition of full - the same thing ATR records, learned
+      // without anyone pressing anything.
+      int an;
+      const ocv_pt_t *at = ocv_table(cfg->chem, &an);
+      float anchor_pc = s_v_ocv / cfg->series;
+      if (anchor_pc > 0.0f && anchor_pc < at[0].v &&
+          ocv_raw(at, an, anchor_pc) >= GAUGE_ASSUME_FULL_MIN_SOC) {
+        if (fabsf(anchor_pc - s_st.v_full_pc) > 0.005f)
+          ESP_LOGI(TAG, "anchor: learned full voltage %.3f V/cell (was %.3f)",
+                   anchor_pc, s_st.v_full_pc);
+        s_st.v_full_pc = anchor_pc;
+      }
+
       s_st.mah_remaining = s_st.mah_full;
       s_st.est = false;
       s_st.full_charges++;
@@ -331,6 +370,7 @@ bool gauge_get(gauge_info_t *out) {
   out->est      = s_st.est;
   out->v_ocv    = s_v_ocv;
   out->r_total  = s_st.r_total;
+  out->v_full_pc = s_st.v_full_pc;
   return true;
 }
 
@@ -339,15 +379,30 @@ bool gauge_reseed_full(const battery_config_t *cfg,
   // Refuse when the pack visibly is not full. "Assume full" on a half-empty
   // battery produces a confidently wrong gauge, which is worse than one that
   // admits it does not know.
+  //
+  // Judged on raw table SoC, not on a fixed offset below the table top. The
+  // old test was t[0].v - (t[0].v - t[1].v) * 0.8, i.e. 4.12 V/cell for Li-ion,
+  // which refused every tool pack whose charger terminates near 4.10 - the
+  // exact packs this is meant to serve. One measured 5S pack cleared it by
+  // 1 mV.
   float per_cell = (r->bus_v + r->current_a * s_st.r_total) / cfg->series;
   int n;
   const ocv_pt_t *t = ocv_table(cfg->chem, &n);
-  float full_thresh = t[0].v - (t[0].v - t[1].v) * 0.8f;
+  float raw = ocv_raw(t, n, per_cell);
 
-  if (per_cell < full_thresh) {
-    ESP_LOGW(TAG, "refusing assume-full: %.3f V/cell is below %.3f",
-             per_cell, full_thresh);
+  if (raw < GAUGE_ASSUME_FULL_MIN_SOC) {
+    ESP_LOGW(TAG, "refusing assume-full: %.3f V/cell is %.0f%% on the table, "
+                  "below %.0f%%", per_cell, raw, GAUGE_ASSUME_FULL_MIN_SOC);
     return false;
+  }
+
+  // The pack just told us what full means for it. Remember it, so every later
+  // OCV seed is scaled to this pack's ceiling rather than the table's.
+  if (per_cell < t[0].v) {
+    if (fabsf(per_cell - s_st.v_full_pc) > 0.005f)
+      ESP_LOGI(TAG, "learned full voltage %.3f V/cell (was %.3f), table top "
+                    "is %.3f", per_cell, s_st.v_full_pc, t[0].v);
+    s_st.v_full_pc = per_cell;
   }
 
   s_st.mah_remaining = s_st.mah_full;

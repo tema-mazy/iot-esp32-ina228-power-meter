@@ -587,6 +587,36 @@ Two consequences:
 
 The general rule: on a battery-plus-converter system there are two distinct "empty" points, and the higher one wins. Provision for the one that matters to the user, which is almost always the point where their load stops working.
 
+### 7.3.2 Tool packs do not charge to 4.20 V/cell
+
+**Measured:** the 5S bench pack's charger goes to steady green and then **refuses to restart** on a re-insert after an overnight rest. Terminal voltage settles at **4.085-4.121 V/cell** (20.4-20.6 V), not the 4.20 V/cell (21.0 V) the chemistry table calls 100 percent. That is deliberate on tool packs - giving up ~8 percent of capacity buys a large gain in cycle life - and it means **the charger's green light, not the datasheet, defines full.**
+
+Consequences, all of which are handled but worth knowing:
+
+- **Provision `Vmax` to the charger's actual termination voltage.** With `Vmax=21.0` the charge-termination anchor needs `bus_v >= 20.9` (`gauge.c`, `vmax - 0.1`) and **can never fire on such a pack** - `mah_full` is never relearned and `full_charges` stays at 0 forever. `Vmax=20.6` fixes it.
+- **The gauge learns the resting-full voltage by itself** and rescales the OCV curve to it, so SoC reads a true 100 at the top instead of ~92. See DEVELOPMENT_PLAN.md S4.4.1. It is reported as `v_full` in `ATA`.
+- **Declare full once per pack.** Charging happens off-rig, so the INA228 never sees the charge current and the anchor never gets the chance. Issue `ATR` (or the button long press) after the charger goes green, with the pack reconnected and near rest. That is what teaches it `v_full`.
+- Do this **promptly after charging.** The assume-full check refuses below 80 percent on the raw table, and a pack left on a load walks down past that.
+
+Combining with S7.3.1, provisioning for a 5S3P tool pack becomes:
+
+```
+ATS=LiIon,5S3P,12000,15.5,20.6,<Imax>,<pack_id>
+```
+
+versus the `15.0,21.0` given in S7.1 - `Vmin` raised to the converter's dropout, `Vmax` lowered to the charger's termination.
+
+### 7.3.3 Sizing `Imax` for a 12 Ah pack
+
+The pack can source far more than the load draws, and `Imax` should follow the **load**, not the pack. Two reasons, both quantified:
+
+| `Imax` | `CURRENT_LSB` (`Imax / 2^19`) | Shunt dissipation at that current |
+|---|---|---|
+| 2.5 A | 4.77 uA | 94 mW |
+| 10 A | 19.1 uA | **1.5 W** |
+
+The 15 mOhm shunt's ceiling is 10.9 A and S8 already flags 1.8 W as needing airflow, so `Imax=10` sits close to both limits while making resolution **4x coarser** on a load that actually draws ~150 mA. Keep `Imax` at 2.5-3 A for a Pi-class load. Raise it only with the load, and past ~10 A move to an external shunt (S3.4).
+
 ### 7.4 Multiple packs
 
 A Makita-format pack implies an ecosystem of interchangeable packs. If you will rotate several, add a `pack_id` field to `ATS` **now** - retrofitting it is a breaking protocol change, whereas the per-pack ID chip (handoff S7.4) can come later without touching the protocol.
