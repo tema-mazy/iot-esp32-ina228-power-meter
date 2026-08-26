@@ -583,6 +583,65 @@ independently, which is worth recording because it is the only external
 reference available: 2 bars at 34.3 percent (band 25-50), the 2-to-1 transition
 at 27.0 percent against a predicted 25, and 1 bar blinking at 3.7 percent.
 
+### 5.9.2a Run 7: the full cycle, charger-full to BMS cutoff
+
+![Full cycle](docs/discharge-full-cycle.svg)
+
+The run 5.9.2 said was still needed. 731 samples over 12.17 h, started on a pack
+the charger had just declared full, ended when the **BMS opened** - not
+converter dropout this time:
+
+| | |
+|---|---|
+| delivered | **1884.9 mAh** |
+| duration | 12.17 h at ~160 mA |
+| start | 20.6404 V (4.128 V/cell) |
+| BMS cutoff | 13.7895 V (2.758 V/cell) under 192 mA |
+| after cutoff | 1.70 V, drifting up ~0.3 mV/min - leakage through an open FET |
+| `R_total` | 0.965 ohm first 2 h -> **1.114 ohm** last hour |
+
+**Capacity is 1885 mAh, 94 percent of the 2000 mAh label.** Take the delivered
+figure directly, not `calibrate.py`'s output, which reports **1968 mAh**: it
+divides by `soc0 = 95.8 %`, and that 95.8 came from an OCV seed against a table
+whose 100 % is 4.20 V/cell - a voltage this pack's charger never reaches
+(S4.4.1). The pack really was full, so the divisor should have been 100 and the
+4.4 percent difference is pure artefact.
+
+> ! **`v_full` was not learned during this run**, which is why the artefact
+> appeared. `ATR` was deliberately not sent - the pack was surface-charged at
+> 4.16 V/cell and anchoring there would have set `v_full` too high - and the
+> automatic path needs 20 minutes at rest, which a 12 h continuous discharge
+> never offers. Learn `v_full` while the pack sits idle after a charge, before
+> starting a capacity run.
+
+For comparison, run 5 delivered 1532.6 mAh from 80 percent and could not measure
+capacity at all. Run 7 delivered **23 percent more** and reached a real cutoff.
+
+### 5.9.2b Surge headroom fails long before steady-state headroom
+
+The run lost its load **three times**, and only the last was the end of the pack:
+
+| at | pack | SoC | current before | cause |
+|---|---|---|---|---|
+| 271 min | 18.87 V (3.774) | 62.0 % | 177 mA | unexplained |
+| 630 min | 17.09 V (3.418) | 12.1 % | 90 mA | brownout, then boot loop |
+| 701 min | 13.79 V (2.758) | 0.0 % | 192 mA | BMS cutoff - end of run |
+
+The middle one is the instructive one. Current had already fallen to 90 mA
+*before* the dropout rather than spiking, so the Pi was winding down, and it
+then drew **342 mA** - the run's peak, well above the 160 mA baseline - trying
+to reboot. Two current steps measured at that moment give `R_total` of **1.05
+and 1.09 ohm**. With open-circuit voltage near 17.15 V and the converter needing
+~15.5 V, that leaves 1.65 V of headroom, which a 1.5 A boot surge consumes
+entirely. Each boot attempt browned itself out.
+
+**So for a Pi-class load the effective system floor is around 10 percent SoC,
+not the 3.8 percent run 5 reached.** Internal resistance climbs as the pack
+empties, so the surge headroom disappears while the steady-state headroom still
+looks comfortable. A gauge that reports only steady-state runtime will read
+healthy right up to the point the load can no longer restart. Run 5 never saw
+this because nothing asked it to boot down there.
+
 ### 5.9.3 The load draws constant power, so current rises as the pack sags
 
 ![Current and power](docs/load-current-power.svg)
@@ -626,16 +685,29 @@ cutoff is worse because both `I` and `R_total` are larger. This is part of why
 run 5 hit converter dropout at 15.46 V rather than riding down to the cells'
 own floor.
 
-**It also breaks the time-to-empty prediction.** Tested against run 5 at eight
-points, mean absolute error:
+**It also breaks the time-to-empty prediction.** Mean absolute error, now
+measured against **two independent runs**:
 
-| method | error |
-|---|---|
-| A: `mah_left / I`, the current implementation | 19.7 % |
-| B: A, but targeting the dropout SoC instead of 0 % | 7.8 % |
-| C: B, plus energy at **mean** remaining voltage `(V_now + V_min)/2`, over power | **3.4 %** |
+| method | run 5 (n=8) | run 7 (n=10) |
+|---|---|---|
+| A: `mah_left / I`, the current implementation | 19.7 % | 11.6 % |
+| B: A, but targeting the dropout SoC instead of 0 % | 7.8 % | 11.6 % |
+| C: B, plus energy at **mean** remaining voltage `(V_now + V_min)/2`, over power | **3.4 %** | **3.0 %** |
 
-A over-predicts at every single point, by +18 to +33 %.
+On run 5, A over-predicts at every single point, by +18 to +33 %.
+
+**The second run changed the conclusion, which is why it was worth waiting for.**
+
+- **B collapses into A on run 7** - identical 11.6 %. Not a bug: run 7 ran to a
+  real BMS cutoff at SoC 0, so there is no unreachable remainder to subtract. B
+  only helps when the load dies *above* 0 %, which is the converter-dropout case
+  of run 5. **B is a fix for a misconfigured `Vmin`, not a general improvement.**
+- **C holds on both**, 3.4 % and 3.0 %, from independent data. The hour-2
+  anomaly that made run 5's figure suspect did not recur.
+
+So the deferred decision resolves as: **implement C, skip B, and provision
+`Vmin` correctly.** Run 7 also re-confirmed the converter floor independently -
+15.4641 V, against run 5's 15.456 V - before the BMS took over lower down.
 
 > ! **Plain `Wh / P` is not the fix and gains nothing.** `wh_left` is
 > `mah_left x v_ocv` and `P` is `I x V`, so the voltage cancels and the result
@@ -650,12 +722,9 @@ for free** - `mah_left` reaches zero when the load really stops, and
 `V_min` supplies the mean-voltage term. No new configuration, no protocol
 change.
 
-> **Not yet implemented, and one run is not enough to justify it.** The 3.4 %
-> figure comes from a single discharge, and hour 2 of that run misbehaves in
-> all three methods (-2 %, -8 %, -16 %) because it sits in the surface-charge
-> region where voltage falls for reasons unrelated to charge. Validate against
-> a second full run before changing `tools/predict.py` or the firmware
-> estimate.
+> **Validated on two runs, not yet implemented.** `tools/predict.py:69` still
+> computes `mah_adj / (i_avg * 1000)`, i.e. method A, and the firmware estimate
+> does the same. Changing both to C is the outstanding work.
 
 ![IR compensation](docs/ir-compensation.svg)
 

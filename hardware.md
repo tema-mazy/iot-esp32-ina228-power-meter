@@ -593,6 +593,22 @@ Two consequences:
 
 The general rule: on a battery-plus-converter system there are two distinct "empty" points, and the higher one wins. Provision for the one that matters to the user, which is almost always the point where their load stops working.
 
+### 7.3.1a Two floors, and the higher one is not the converter
+
+S7.3.1 said the converter sets the floor. Run 7 showed there are really **three**, and which one you meet depends on what the load is doing:
+
+| floor | measured | reached when |
+|---|---|---|
+| **Surge headroom** | ~10 % SoC | the load tries to draw a starting surge |
+| Converter dropout | 15.46 V (3.09 V/cell) | steady-state draw only |
+| BMS protection | 13.79 V (2.758 V/cell) under 192 mA | the pack is genuinely empty |
+
+The converter floor is now confirmed twice and independently: **15.456 V** in run 5, **15.4641 V** in run 7.
+
+**But a Pi never gets that far.** `R_total` rises from 0.965 ohm at the start of a discharge to **1.114 ohm** in the final hour, so at 10 percent SoC the open-circuit voltage sits near 17.15 V and only ~1.65 V separates it from the converter's 15.5 V input minimum. A 1.5 A boot surge across 1.07 ohm consumes all of it. Run 7 caught exactly this: the Pi browned out at 12.1 percent, drew 342 mA - the run's peak - trying to restart, and browned out again.
+
+**So size runtime by the surge floor, not the steady-state one.** A gauge reporting only steady-state runtime reads healthy right up to the moment the load can no longer boot. For a Pi-class load on this pack the practical reserve is around 10 percent, which is also a sensible `Vmin` target: it stops the gauge promising charge the system cannot actually start on.
+
 ### 7.3.2 Tool packs do not charge to 4.20 V/cell
 
 **Measured:** the 5S bench pack's charger goes to steady green and then **refuses to restart** on a re-insert after an overnight rest. Terminal voltage settles at **4.085-4.121 V/cell** (20.4-20.6 V), not the 4.20 V/cell (21.0 V) the chemistry table calls 100 percent. That is deliberate on tool packs - giving up ~8 percent of capacity buys a large gain in cycle life - and it means **the charger's green light, not the datasheet, defines full.**

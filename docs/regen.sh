@@ -11,6 +11,12 @@ python3 tools/svg_chart.py docs/discharge-curve.svg \
   --min-bus-v 1.0 \
   --caption "Discharge at ~150 mA, 5S1P 18650, plateau through the knee"
 
+python3 tools/svg_chart.py docs/discharge-full-cycle.svg \
+  discharge-run7-full.jsonl \
+  --field v --per-cell 5 --ylabel "V/cell" --label "5S Li-ion" \
+  --min-bus-v 10.0 \
+  --caption "Run 7: full charge to BMS cutoff, 1885 mAh over 12.2 h"
+
 python3 tools/svg_chart.py docs/discharge-knee.svg \
   discharge-run5-dropout.jsonl \
   --field v --per-cell 5 --ylabel "V/cell" --label "5S Li-ion" \

@@ -129,28 +129,45 @@ function ticks(lo, hi, n){
 function draw(el, spec){
   const S = spec.series.filter(s=>s.pts.length);
   if (!S.length){ el.innerHTML=''; return; }
-  const xs=S.flatMap(s=>s.pts.map(p=>p[0])), ys=S.flatMap(s=>s.pts.map(p=>p[1]));
+  const xs=S.flatMap(s=>s.pts.map(p=>p[0]));
   const x0=Math.min(...xs), x1=Math.max(...xs);
-  let y0=Math.min(...ys), y1=Math.max(...ys);
-  const span=(y1-y0)||1; y0-=span*0.08; y1+=span*0.08;
-  const px=x=>PAD.l+(x1===x0?0:(x-x0)/(x1-x0)*pw);
-  const py=y=>PAD.t+ph-(y-y0)/(y1-y0)*ph;
+  // Optional independent right-hand scale for series marked axis:1. Two
+  // y-scales mean the gap between the lines is set by the range choices, not
+  // by the data, so never read a relationship off such a panel.
+  const R = spec.ylabel2 ? S.filter(s=>s.axis===1) : [];
+  const L = S.filter(s=>R.indexOf(s)<0);
+  const rng=arr=>{const v=arr.flatMap(s=>s.pts.map(p=>p[1]));
+    let a=Math.min(...v), b=Math.max(...v); const sp=(b-a)||1;
+    return [a-sp*0.08, b+sp*0.08];};
+  const [y0,y1]=rng(L.length?L:S);
+  const [r0,r1]=R.length?rng(R):[0,1];
+  const pwr = R.length ? pw-46 : pw;
+  const px=x=>PAD.l+(x1===x0?0:(x-x0)/(x1-x0)*pwr);
+  const py=(y,ax)=>ax?PAD.t+ph-(y-r0)/(r1-r0)*ph:PAD.t+ph-(y-y0)/(y1-y0)*ph;
   const o=[`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${spec.title}">`];
   const yt=ticks(y0,y1,5), xt=ticks(x0,x1,6);
+  const rt=R.length?ticks(r0,r1,5):[];
   const fyT = yt.length>1 ? autoFmt(yt[1]-yt[0]) : spec.fy;
   const fxT = xt.length>1 ? autoFmt(xt[1]-xt[0]) : spec.fx;
   for (const t of yt){
     const y=py(t);
-    o.push(`<line class="grid" x1="${PAD.l}" y1="${y.toFixed(1)}" x2="${PAD.l+pw}" y2="${y.toFixed(1)}"/>`);
+    o.push(`<line class="grid" x1="${PAD.l}" y1="${y.toFixed(1)}" x2="${PAD.l+pwr}" y2="${y.toFixed(1)}"/>`);
     o.push(`<text class="tick" x="${PAD.l-8}" y="${(y+4).toFixed(1)}" text-anchor="end">${fyT(t)}</text>`);
   }
   for (const t of xt){
     if (t<x0||t>x1) continue;
     o.push(`<text class="tick" x="${px(t).toFixed(1)}" y="${PAD.t+ph+20}" text-anchor="middle">${fxT(t)}</text>`);
   }
-  o.push(`<line class="axis" x1="${PAD.l}" y1="${PAD.t+ph}" x2="${PAD.l+pw}" y2="${PAD.t+ph}"/>`);
-  o.push(`<text class="axlabel" x="${PAD.l+pw/2}" y="${H-6}" text-anchor="middle">${spec.xlabel}</text>`);
+  o.push(`<line class="axis" x1="${PAD.l}" y1="${PAD.t+ph}" x2="${PAD.l+pwr}" y2="${PAD.t+ph}"/>`);
+  o.push(`<text class="axlabel" x="${PAD.l+pwr/2}" y="${H-6}" text-anchor="middle">${spec.xlabel}</text>`);
   o.push(`<text class="axlabel" transform="translate(14,${PAD.t+ph/2}) rotate(-90)" text-anchor="middle">${spec.ylabel}</text>`);
+  if (R.length){
+    const rx=PAD.l+pwr, fr=rt.length>1?autoFmt(rt[1]-rt[0]):spec.fy;
+    o.push(`<line class="axis" x1="${rx}" y1="${PAD.t}" x2="${rx}" y2="${PAD.t+ph}"/>`);
+    for (const t of rt)
+      o.push(`<text class="tick s2f" x="${rx+8}" y="${(py(t,1)+4).toFixed(1)}">${fr(t)}</text>`);
+    o.push(`<text class="axlabel s2f" transform="translate(${W-10},${PAD.t+ph/2}) rotate(-90)" text-anchor="middle">${spec.ylabel2}</text>`);
+  }
   // Break the path wherever samples are far apart in x. Drawing a straight
   // line across a ten-hour gap between runs would read as measured data.
   const GAP = spec.gapX || 0;
@@ -158,7 +175,7 @@ function draw(el, spec){
     let d='', prev=null;
     for (const p of s.pts){
       const cmd = (prev===null || (GAP && p[0]-prev > GAP)) ? 'M' : 'L';
-      d += cmd + px(p[0]).toFixed(1) + ',' + py(p[1]).toFixed(1) + ' ';
+      d += cmd + px(p[0]).toFixed(1) + ',' + py(p[1],s.axis).toFixed(1) + ' ';
       prev = p[0];
     }
     o.push(`<path class="line s${s.slot}" d="${d.trim()}"${s.dashed?' stroke-dasharray="6 4"':''}/>`);
@@ -168,14 +185,14 @@ function draw(el, spec){
   // colour-alone, and the sub-3:1 slots need visible labels as relief.
   const LBL_H=13;
   const lab=S.map(s=>{const p=s.pts[s.pts.length-1];
-    return {t:s.label, slot:s.slot, x:px(p[0]), y:py(p[1])};});
+    return {t:s.label, slot:s.slot, x:px(p[0]), y:py(p[1],s.axis)};});
   lab.sort((a,b)=>a.y-b.y);
   for (let i=1;i<lab.length;i++)
     if (lab[i].y-lab[i-1].y < LBL_H) lab[i].y = lab[i-1].y + LBL_H;
   const over = lab.length ? lab[lab.length-1].y-(PAD.t+ph) : 0;
   if (over>0) for (const l of lab) l.y -= over;   // keep them inside the plot
   for (const l of lab)
-    o.push(`<text class="dlabel s${l.slot}f" x="${(l.x+8).toFixed(1)}" y="${(l.y+4).toFixed(1)}">${l.t}</text>`);
+    o.push(`<text class="dlabel s${l.slot}f" x="${(l.x+(R.length?44:8)).toFixed(1)}" y="${(l.y+4).toFixed(1)}">${l.t}</text>`);
   if (spec.gapX && spec.gaps){
     for (const g of spec.gaps){
       if (g[1]<x0||g[0]>x1) continue;
@@ -183,7 +200,7 @@ function draw(el, spec){
     }
   }
   o.push(`<line class="cross" x1="0" y1="${PAD.t}" x2="0" y2="${PAD.t+ph}" style="display:none"/>`);
-  o.push(`<rect class="hit" x="${PAD.l}" y="${PAD.t}" width="${pw}" height="${ph}" fill="transparent"/>`);
+  o.push(`<rect class="hit" x="${PAD.l}" y="${PAD.t}" width="${pwr}" height="${ph}" fill="transparent"/>`);
   o.push('</svg>');
   el.innerHTML=o.join('');
 
@@ -194,7 +211,7 @@ function draw(el, spec){
     for (const s of S){
       let best=null,bd=1e9;
       for (const p of s.pts){ const d=Math.abs(px(p[0])-sx); if(d<bd){bd=d;best=p;} }
-      if (best) rows.push(s.label+': '+spec.fy(best[1]));
+      if (best) rows.push(s.label+': '+((s.axis&&spec.fy2)?spec.fy2(best[1]):spec.fy(best[1])));
     }
     if (!rows.length) return;
     cross.style.display=''; cross.setAttribute('x1',sx); cross.setAttribute('x2',sx);
@@ -249,8 +266,12 @@ function panelSpecs(rows){
       {label:'measured', slot:1, pts:rows.map((r,i)=>[hrs[i],r.v])},
       {label:'IR-corrected', slot:2, pts:rows.filter(r=>r.v_ocv!==undefined).map(r=>[r._h,r.v_ocv])},
     ]});
-  P.push({key:'i', title:'Load current', ylabel:'mA', xlabel:'logging hours (gaps collapsed)', fy:f0, fx:f1,
-    note:'', gapX:SPACER*0.9, gaps, series:[{label:'current', slot:1, pts:rows.map((r,i)=>[hrs[i],r.i*1000])}]});
+  P.push({key:'i', title:'Load current and input power', ylabel:'mA', ylabel2:'W',
+    xlabel:'logging hours (gaps collapsed)', fy:f0, fy2:f2, fx:f1,
+    note:'Independent scales - the spacing between the lines is set by the two ranges, not by the data. Current rises as the pack sags because the load draws constant power.',
+    gapX:SPACER*0.9, gaps, series:[
+      {label:'current', slot:1, axis:0, pts:rows.map((r,i)=>[hrs[i],r.i*1000])},
+      {label:'power', slot:2, axis:1, pts:rows.map((r,i)=>[hrs[i],r.v*r.i])}]});
   if (rows.some(r=>r.soc!==undefined)){
     P.push({key:'soc', title:'State of charge', ylabel:'%', xlabel:'logging hours (gaps collapsed)', fy:f1, fx:f1,
       note:'Coulomb count is the gauge. OCV lookup is what voltage alone would say - the gap is IR sag plus curve flatness.',
