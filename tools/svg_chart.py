@@ -164,6 +164,11 @@ def main():
                          "pack disconnected sit near 0 V - a true measurement "
                          "of nothing - and would otherwise pin the y-axis to "
                          "zero and flatten the curve.")
+    ap.add_argument("--bucket-min", type=float,
+                    help="average samples into buckets this many minutes wide. "
+                         "A trend of tens of percent is invisible under a load "
+                         "that swings by as much between consecutive samples; "
+                         "bucketing shows the trend the caption claims.")
     args = ap.parse_args()
 
     rows = load(args.logs)
@@ -187,6 +192,13 @@ def main():
             if args.per_cell:
                 v /= args.per_cell
             out.append(((r["ts"] - t0) / 3600.0, v))
+        if args.bucket_min:
+            width = args.bucket_min / 60.0
+            acc = {}
+            for x, y in out:
+                acc.setdefault(int(x / width), []).append((x, y))
+            out = [(sum(p[0] for p in v) / len(v), sum(p[1] for p in v) / len(v))
+                   for _, v in sorted(acc.items())]
         return out
 
     series = [(args.label, pts(args.field), 1, False)]

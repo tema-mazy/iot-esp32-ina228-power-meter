@@ -583,6 +583,74 @@ independently, which is worth recording because it is the only external
 reference available: 2 bars at 34.3 percent (band 25-50), the 2-to-1 transition
 at 27.0 percent against a predicted 25, and 1 bar blinking at 3.7 percent.
 
+### 5.9.3 The load draws constant power, so current rises as the pack sags
+
+![Load current rises](docs/load-current-rise.svg)
+
+![Load power stays flat](docs/load-power-flat.svg)
+
+Both charts are the same run and the same 20-minute means. Current climbs
+steadily; power does not. That is the signature of a **constant-power load** -
+a buck converter holds its output, so `I_in = P_out / (V_in x eta)` and input
+current must rise as the pack falls. Over hours 3 to the end of run 5:
+
+| | change |
+|---|---|
+| voltage | -12.1 % (18.50 -> 16.27 V) |
+| current | **+18.6 %** (151.6 -> 179.8 mA) |
+| power | +4.2 % (2.806 -> 2.925 W) |
+
+Constant power alone predicts **+13.7 %** for that voltage drop, so about three
+quarters of the rise is the converter compensating. The remaining ~4 percent is
+power genuinely increasing, most likely **converter efficiency falling** as
+input voltage drops - at fixed output the input current is higher, so `I^2 R`
+conduction losses grow. It could equally be the Pi's own workload drifting;
+this data cannot separate the two, which would need measurement on both sides
+of the converter.
+
+> **Do not judge this per-sample.** Regressing `I` on `1/V` across the raw
+> samples gives `R^2 = 0.31`, which looks like the model failing. It is not:
+> the Pi's second-to-second load swings are far larger than the trend and are
+> unrelated to voltage. The trend is real but only visible in aggregate, which
+> is why the charts above are bucketed and why the table uses hour means.
+
+**Consequence: the load gets hungrier exactly as the pack gets weaker.** Runtime
+is shorter than a naive "mAh left / present current" suggests, and the sag near
+cutoff is worse because both `I` and `R_total` are larger. This is part of why
+run 5 hit converter dropout at 15.46 V rather than riding down to the cells'
+own floor.
+
+**It also breaks the time-to-empty prediction.** Tested against run 5 at eight
+points, mean absolute error:
+
+| method | error |
+|---|---|
+| A: `mah_left / I`, the current implementation | 19.7 % |
+| B: A, but targeting the dropout SoC instead of 0 % | 7.8 % |
+| C: B, plus energy at **mean** remaining voltage `(V_now + V_min)/2`, over power | **3.4 %** |
+
+A over-predicts at every single point, by +18 to +33 %.
+
+> ! **Plain `Wh / P` is not the fix and gains nothing.** `wh_left` is
+> `mah_left x v_ocv` and `P` is `I x V`, so the voltage cancels and the result
+> is `mah_left / I` again - the identical number. What does the work in C is
+> using the **mean** remaining voltage rather than the present one, since
+> voltage will be lower over the discharge still to come.
+
+Both improvements need only one thing that is not already available: the
+voltage at which the system actually dies. That is exactly what `Vmin` should
+hold (hardware.md S7.3.1), so **provisioning `Vmin` correctly delivers B and C
+for free** - `mah_left` reaches zero when the load really stops, and
+`V_min` supplies the mean-voltage term. No new configuration, no protocol
+change.
+
+> **Not yet implemented, and one run is not enough to justify it.** The 3.4 %
+> figure comes from a single discharge, and hour 2 of that run misbehaves in
+> all three methods (-2 %, -8 %, -16 %) because it sits in the surface-charge
+> region where voltage falls for reasons unrelated to charge. Validate against
+> a second full run before changing `tools/predict.py` or the firmware
+> estimate.
+
 ![IR compensation](docs/ir-compensation.svg)
 
 Run 5 with IR compensation applied. Raw voltage swings ~97 mV as the
