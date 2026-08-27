@@ -722,9 +722,13 @@ for free** - `mah_left` reaches zero when the load really stops, and
 `V_min` supplies the mean-voltage term. No new configuration, no protocol
 change.
 
-> **Validated on two runs, not yet implemented.** `tools/predict.py:69` still
-> computes `mah_adj / (i_avg * 1000)`, i.e. method A, and the firmware estimate
-> does the same. Changing both to C is the outstanding work.
+> **Validated on two runs, not yet implemented.** `tools/predict.py:69` computes
+> `mah_adj / (i_avg * 1000)`, i.e. method A, and is the **only** site: there is
+> no firmware time-to-empty estimate. `ATA` carries measurements and SoC, never
+> a projection - the `pred` object in the logs is added host-side by
+> `monitor.py`. C needs `V_now` (have it), `V_min` (from `ATS`, and the reason
+> provisioning it correctly matters) and mean power over the same window as
+> `i_avg`.
 
 ![IR compensation](docs/ir-compensation.svg)
 
