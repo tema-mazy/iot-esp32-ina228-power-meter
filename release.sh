@@ -203,9 +203,16 @@ fi
 # auto-generated source archives. The API calls exist to attach the firmware
 # image, which is the part that actually matters here.
 [ -n "$GITHUB_TOKEN" ] || die "--publish needs GITHUB_TOKEN in the environment.
-     Create a fine-grained token with Contents: read and write on this repo,
-     then:  export GITHUB_TOKEN=ghp_...
-     Do not paste it into a file that git tracks."
+
+     There is no 'Releases' permission to look for - GitHub puts releases
+     under Contents, which covers 'repository contents, commits, branches,
+     downloads, releases, and merges'. So:
+
+       fine-grained token : Repository permissions -> Contents: Read and write
+       classic token      : the 'repo' scope (public_repo if the repo is public)
+
+     Then:  export GITHUB_TOKEN=...
+     Keep it out of any file git tracks."
 
 REMOTE="$(git remote get-url origin)"
 # git@github.com:owner/repo.git  or  https://github.com/owner/repo.git
