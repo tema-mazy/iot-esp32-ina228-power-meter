@@ -195,17 +195,62 @@ if [ -z "$PUBLISH" ]; then
   exit 0
 fi
 
-command -v gh >/dev/null 2>&1 \
-  || die "--publish needs the GitHub CLI: sudo port install gh, then gh auth login"
-gh auth status >/dev/null 2>&1 || die "gh is not authenticated - run: gh auth login"
+# Publishing needs no extra tooling: a GitHub release is two REST calls, and
+# curl plus a token does both. gh would only be convenience, and installing a
+# whole CLI to POST twice is not a trade worth making.
+#
+# Note that pushing the tag alone already produces a release page with
+# auto-generated source archives. The API calls exist to attach the firmware
+# image, which is the part that actually matters here.
+[ -n "$GITHUB_TOKEN" ] || die "--publish needs GITHUB_TOKEN in the environment.
+     Create a fine-grained token with Contents: read and write on this repo,
+     then:  export GITHUB_TOKEN=ghp_...
+     Do not paste it into a file that git tracks."
+
+REMOTE="$(git remote get-url origin)"
+# git@github.com:owner/repo.git  or  https://github.com/owner/repo.git
+SLUG="$(printf '%s' "$REMOTE" | sed -e 's#^.*github\.com[:/]##' -e 's#\.git$##')"
+case "$SLUG" in
+  */*) ;;
+  *)   die "cannot parse owner/repo from origin: $REMOTE" ;;
+esac
 
 echo
 echo "release: pushing tag $VERSION"
 git push origin "$VERSION"
 
-gh release create "$VERSION" \
-  "$OUT/power-meter-$VERSION.bin" \
-  --title "power-meter $VERSION" \
-  --notes-file "$NOTES"
+echo "release: creating release $SLUG $VERSION"
+UPLOAD="$(python3 - "$SLUG" "$VERSION" "$NOTES" <<'PY'
+import json, os, sys, urllib.request, urllib.error
+slug, tag, notes_path = sys.argv[1], sys.argv[2], sys.argv[3]
+body = json.dumps({
+    "tag_name": tag,
+    "name": "power-meter " + tag,
+    "body": open(notes_path).read(),
+}).encode()
+req = urllib.request.Request(
+    "https://api.github.com/repos/%s/releases" % slug, data=body,
+    headers={"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+             "Accept": "application/vnd.github+json",
+             "Content-Type": "application/json",
+             "User-Agent": "release.sh"})
+try:
+    r = json.load(urllib.request.urlopen(req))
+except urllib.error.HTTPError as e:
+    sys.exit("github: %s %s" % (e.code, e.read().decode()[:300]))
+# upload_url arrives as a URI template ending {?name,label}
+print(r["upload_url"].split("{")[0])
+PY
+)" || die "could not create the release"
 
-echo "release: published $VERSION"
+ASSET="$OUT/power-meter-$VERSION.bin"
+echo "release: uploading $(basename "$ASSET")"
+curl -sS -f -X POST \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary "@$ASSET" \
+  "$UPLOAD?name=$(basename "$ASSET")" >/dev/null \
+  || die "release created but the asset upload failed - attach it by hand, or
+     delete the release and re-run"
+
+echo "release: published https://github.com/$SLUG/releases/tag/$VERSION"
