@@ -100,11 +100,13 @@ c82f6c1,Aug 26 2026 09:03:15,esp32c3,94A99071387C
 Fields: firmware version, build date and time, chip, MAC (12 hex, no
 separators).
 
-**Version is `git describe` output.** A tagged release reports the tag; an
-untagged build reports a bare commit SHA; an uncommitted build reports
-`<sha>-dirty` and **two different dirty builds are indistinguishable**. Treat
-a `-dirty` suffix as "unknown build" for any rollback or inventory decision.
-`release.sh` refuses to package a dirty tree for this reason.
+**Version is `git describe` output**, and releases are tagged `vYY.MM-<short
+hash>` - the month says roughly when, the hash says exactly what. An untagged
+build reports a bare commit SHA; an uncommitted build reports `<sha>-dirty` and
+**two different dirty builds are indistinguishable**. Treat a `-dirty` suffix
+as "unknown build" for any rollback or inventory decision. `release.sh` refuses
+to package a dirty tree for this reason, and verifies the version string is
+actually present in the built image before shipping it.
 
 ### 4.3 `ATA` - live measurement
 

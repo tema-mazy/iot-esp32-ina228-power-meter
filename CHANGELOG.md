@@ -1,18 +1,19 @@
 # Changelog
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Versions are git tags; `release.sh` reads the section matching the tag it is
-building and copies it into that release's notes, so keep the headings exactly
-as `## [x.y.z] - YYYY-MM-DD`.
+
+Versions are `vYY.MM-<short hash>`: the month says roughly when, the hash says
+exactly what. `release.sh` derives the tag from HEAD, so the hash is never
+knowable before the commit exists - which is why **sections are keyed by month**
+(`## [v26.08]`) rather than by full version. Several releases in one month share
+its section. Keep headings exactly as `## [vYY.MM] - YYYY-MM-DD`; `release.sh`
+matches on that and copies the section into the release notes.
 
 Measured figures cite the run they came from. Runs are the archived
 `discharge-run*.jsonl` logs, and the analysis behind them is in
 DEVELOPMENT_PLAN.md S5.9.
 
-## [Unreleased]
-
-Nothing released yet. Everything below shipped to `main` but carries no tag,
-so builds identify themselves over `ATI` by commit SHA rather than by version.
+## [v26.08] - 2026-08-28
 
 ### Added
 
