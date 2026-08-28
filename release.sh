@@ -3,6 +3,7 @@
 #
 #   ./release.sh              package HEAD as vYY.MM-<hash>
 #   ./release.sh --dry        build and report, write nothing
+#   ./release.sh --publish    package, push the tag, create a GitHub release
 #   ./release.sh v26.08-abc1234    re-package an existing version
 #
 # Version scheme is vYY.MM-<short hash>: the month says roughly when, the hash
@@ -11,13 +12,14 @@
 # commit. release.sh creates the tag if it does not exist; delete it with
 # `git tag -d <version>` if you change your mind.
 #
-# Produces dist/power-meter-<version>/ containing:
-#   firmware.bin       the image to feed to ATFW
-#   release_notes.md   this month's CHANGELOG section plus the commit list
-#   MD5SUMS            md5 of firmware.bin - ATFW needs exactly this value
-#   manifest.txt       size, md5, chip, IDF version, source commit
-#   integration.md     host API spec, copied so the tarball stands alone
-# and the tarball dist/power-meter-<version>.tar.gz
+# Produces two files in dist/:
+#   power-meter-<version>.bin   the image to feed to ATFW
+#   power-meter-<version>.md    notes: size, md5, the exact ATFW line, this
+#                               month's CHANGELOG section, and the commits
+#
+# Deliberately just those two. The size and md5 an OTA needs are in the notes,
+# so a separate MD5SUMS or manifest would only be a second copy to fall out of
+# step, and integration.md lives in the repo where it is edited.
 set -e
 
 die() { echo "release: $*" >&2; exit 1; }
@@ -26,10 +28,12 @@ cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
 DRY=""
+PUBLISH=""
 VERSION=""
 for arg in "$@"; do
   case "$arg" in
-    --dry) DRY=1 ;;
+    --dry)     DRY=1 ;;
+    --publish) PUBLISH=1 ;;
     -*)    die "unknown option $arg" ;;
     *)     VERSION="$arg" ;;
   esac
@@ -102,7 +106,7 @@ if command -v strings >/dev/null 2>&1; then
   }
 fi
 
-echo "release: firmware.bin  $SIZE bytes  md5 $MD5"
+echo "release: image  $SIZE bytes  md5 $MD5"
 
 if [ -n "$DRY" ]; then
   echo "release: --dry, stopping before writing dist/"
@@ -111,9 +115,9 @@ fi
 
 # -- notes --------------------------------------------------------------------
 
-OUT="$ROOT/dist/power-meter-$VERSION"
-rm -rf "$OUT"
+OUT="$ROOT/dist"
 mkdir -p "$OUT"
+NOTES="$OUT/power-meter-$VERSION.md"
 
 PREV="$(git describe --tags --abbrev=0 "$VERSION^" 2>/dev/null || true)"
 if [ -n "$PREV" ]; then
@@ -131,7 +135,7 @@ fi
   echo
   echo "| | |"
   echo "|---|---|"
-  echo "| image | firmware.bin |"
+  echo "| image | power-meter-$VERSION.bin |"
   echo "| size | $SIZE bytes |"
   echo "| md5 | \`$MD5\` |"
   echo "| target | esp32c3 |"
@@ -171,28 +175,37 @@ fi
   echo "## $SINCE"
   echo
   git log --no-merges --pretty='- %s (%h)' "$RANGE"
-} > "$OUT/release_notes.md"
+} > "$NOTES"
 
 # -- package ------------------------------------------------------------------
 
-cp "$BIN" "$OUT/firmware.bin"
-[ -f "$ROOT/integration.md" ] && cp "$ROOT/integration.md" "$OUT/"
-echo "$MD5  firmware.bin" > "$OUT/MD5SUMS"
+cp "$BIN" "$OUT/power-meter-$VERSION.bin"
 
-{
-  echo "version=$VERSION"
-  echo "commit=$HEAD_SHA"
-  echo "size=$SIZE"
-  echo "md5=$MD5"
-  echo "target=esp32c3"
-  echo "idf=$(idf.py --version 2>/dev/null | tail -1)"
-  echo "built=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-} > "$OUT/manifest.txt"
-
-tar -czf "$ROOT/dist/power-meter-$VERSION.tar.gz" -C "$ROOT/dist" "power-meter-$VERSION"
-
-echo "release: wrote dist/power-meter-$VERSION.tar.gz"
+echo "release: wrote dist/power-meter-$VERSION.bin"
+echo "release: wrote dist/power-meter-$VERSION.md"
 echo
 echo "  flash over USB :  idf.py -p <port> flash"
 echo "  update over AT :  ATFW=$SIZE,$MD5"
-echo "  push the tag   :  git push origin $VERSION"
+
+# -- publish ------------------------------------------------------------------
+
+if [ -z "$PUBLISH" ]; then
+  echo
+  echo "  publish        :  ./release.sh --publish   (needs gh, pushes the tag)"
+  exit 0
+fi
+
+command -v gh >/dev/null 2>&1 \
+  || die "--publish needs the GitHub CLI: sudo port install gh, then gh auth login"
+gh auth status >/dev/null 2>&1 || die "gh is not authenticated - run: gh auth login"
+
+echo
+echo "release: pushing tag $VERSION"
+git push origin "$VERSION"
+
+gh release create "$VERSION" \
+  "$OUT/power-meter-$VERSION.bin" \
+  --title "power-meter $VERSION" \
+  --notes-file "$NOTES"
+
+echo "release: published $VERSION"

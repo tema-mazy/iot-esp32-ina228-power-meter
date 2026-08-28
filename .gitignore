@@ -1,6 +1,7 @@
 # ESP-IDF build output
 build/
-dist/           # release.sh output; rebuildable from a tag
+# release.sh output; rebuildable from any tag
+dist/
 sdkconfig
 sdkconfig.old
 managed_components/
